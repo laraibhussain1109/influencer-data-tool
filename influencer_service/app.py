@@ -12,6 +12,20 @@ from influencer_service.xlsx_reader import load_first_sheet
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKBOOK = REPO_ROOT / "influencers.xlsx"
+DATA_SOURCE_DISCLOSURE = {
+    "mode": "workbook_only",
+    "instagram_api_enabled": False,
+    "message": (
+        "This service does not call Instagram, scrape Instagram, or fetch private "
+        "Instagram Insights. It calculates metrics only from columns already present "
+        "in the selected workbook."
+    ),
+    "live_instagram_requirements": [
+        "Instagram Graph API or approved provider integration",
+        "Creator/Business account authorization from each influencer",
+        "Insight columns such as audience demographics, reach, and video views",
+    ],
+}
 
 FETCH_DETAILS_PAGE = """
 <!doctype html>
@@ -19,7 +33,7 @@ FETCH_DETAILS_PAGE = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Influencer Insights Fetcher</title>
+  <title>Workbook Influencer Insights</title>
   <style>
     :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f6f7fb; color: #172033; }
@@ -31,7 +45,7 @@ FETCH_DETAILS_PAGE = """
     input { border: 0; border-radius: 14px; padding: 14px 16px; font: inherit; box-shadow: inset 0 0 0 1px rgba(23, 32, 51, .12); }
     button { border: 0; border-radius: 14px; padding: 14px 20px; background: #111827; color: white; cursor: pointer; font-weight: 700; font: inherit; }
     button:disabled { cursor: wait; opacity: .68; }
-    .notice { margin-top: 18px; padding: 14px 16px; border-radius: 14px; background: #fff7ed; color: #9a3412; display: none; }
+    .notice { margin-top: 18px; padding: 14px 16px; border-radius: 14px; background: #fff7ed; color: #9a3412; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
     .card { background: white; border-radius: 18px; padding: 18px; box-shadow: 0 12px 34px rgba(15, 23, 42, .08); }
     .card h2, .card h3 { margin: 0 0 10px; font-size: .94rem; color: #64748b; text-transform: uppercase; letter-spacing: .08em; }
@@ -51,15 +65,15 @@ FETCH_DETAILS_PAGE = """
 <body>
   <main>
     <section class="hero">
-      <h1>Instagram influencer insights</h1>
-      <p>Click once to read the workbook, compute every requested metric that is present, and clearly flag fields that need an Instagram Insights/API export or provider feed.</p>
+      <h1>Workbook influencer insights</h1>
+      <p>Click once to read the workbook and calculate every requested metric that is already present in the sheet. This app does not call Instagram or scrape Instagram; private Insights must be supplied through a compliant export, API, or provider feed.</p>
       <div class="controls">
         <input id="fileInput" aria-label="Workbook path" placeholder="Workbook path" value="{{ default_workbook }}">
-        <button id="fetchButton">Fetch details</button>
+        <button id="fetchButton">Calculate workbook details</button>
       </div>
     </section>
 
-    <div id="notice" class="notice"></div>
+    <div id="notice" class="notice"><strong>Data source:</strong> Workbook only. No live Instagram API or scraper is configured.</div>
     <section id="results" class="grid" aria-live="polite"></section>
   </main>
 
@@ -112,11 +126,17 @@ FETCH_DETAILS_PAGE = """
       </tbody></table></article>`;
     }
 
+
+    function renderSourceDisclosure(payload) {
+      const requirements = (payload.data_source.live_instagram_requirements || []).map(item => `<li>${item}</li>`).join('');
+      return `<article class="card full"><h2>Data source disclosure</h2><p>${payload.data_source.message}</p><p class="muted">For live Instagram Insights, add:</p><ul>${requirements}</ul></article>`;
+    }
+
     function renderMissing(payload) {
       const entries = Object.entries(payload.metrics.unavailable_fields || {});
       if (!entries.length) return '';
       const rows = entries.map(([key, reason]) => `<tr><td>${labels[key] || key}</td><td>${reason}</td></tr>`).join('');
-      return `<article class="card full"><h2>Fields that need an insights export/provider</h2><p class="muted">The app does not invent private Instagram analytics. Add these columns to the workbook or connect a compliant provider feed, then click Fetch details again.</p><table><thead><tr><th>Requested detail</th><th>Why unavailable</th></tr></thead><tbody>${rows}</tbody></table></article>`;
+      return `<article class="card full"><h2>Fields that need an insights export/provider</h2><p class="muted">The app does not invent private Instagram analytics. Add these columns to the workbook or connect a compliant provider feed, then calculate again.</p><table><thead><tr><th>Requested detail</th><th>Why unavailable</th></tr></thead><tbody>${rows}</tbody></table></article>`;
     }
 
     function renderInfluencers(payload) {
@@ -126,8 +146,8 @@ FETCH_DETAILS_PAGE = """
 
     async function fetchDetails() {
       button.disabled = true;
-      button.textContent = 'Fetching...';
-      notice.style.display = 'none';
+      button.textContent = 'Calculating...';
+      notice.style.display = 'block';
       results.innerHTML = '';
       const params = new URLSearchParams();
       if (fileInput.value.trim()) params.set('file', fileInput.value.trim());
@@ -137,6 +157,7 @@ FETCH_DETAILS_PAGE = """
         if (!response.ok) throw new Error(payload.error || 'Unable to fetch details.');
         const m = payload.metrics;
         results.innerHTML = [
+          renderSourceDisclosure(payload),
           metricCard('Total influencers', m.total_influencers, 'total_influencers', payload),
           metricCard(labels.female_gender_ratio_percent, `${fmt(m.female_gender_ratio_percent)}%`, 'female_gender_ratio_percent', payload),
           metricCard(labels.male_gender_ratio_percent, `${fmt(m.male_gender_ratio_percent)}%`, 'male_gender_ratio_percent', payload),
@@ -157,7 +178,7 @@ FETCH_DETAILS_PAGE = """
         notice.style.display = 'block';
       } finally {
         button.disabled = false;
-        button.textContent = 'Fetch details';
+        button.textContent = 'Calculate workbook details';
       }
     }
 
@@ -192,6 +213,7 @@ def create_app() -> Flask:
         records, workbook = _load_records_from_request()
         payload = build_metrics(records)
         payload["source_file"] = str(workbook)
+        payload["data_source"] = DATA_SOURCE_DISCLOSURE
         return jsonify(payload)
 
     @app.get("/api/details")
@@ -202,6 +224,7 @@ def create_app() -> Flask:
         return jsonify(
             {
                 "source_file": str(workbook),
+                "data_source": DATA_SOURCE_DISCLOSURE,
                 "metrics": build_metrics(filtered),
                 "influencer_count": len(filtered),
                 "influencers": normalize_records(filtered),
