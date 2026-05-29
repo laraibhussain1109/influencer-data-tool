@@ -12,8 +12,8 @@ def test_fetch_details_page_has_button():
 
     assert response.status_code == 200
     assert b"Calculate workbook details" in response.data
-    assert b"Fetch complete insights" in response.data
-    assert b"Workbook + configured insights provider" in response.data
+    assert b"Fetch RocketAPI details" in response.data
+    assert b"Workbook + RocketAPI" in response.data
     assert b"/api/details" in response.data
 
 
@@ -24,8 +24,8 @@ def test_details_endpoint_combines_metrics_and_influencers():
     payload = response.get_json()
 
     assert response.status_code == 200
-    assert payload["data_source"]["mode"] == "workbook_plus_provider_insights"
-    assert payload["data_source"]["provider_insights_enabled"] is True
+    assert payload["data_source"]["mode"] == "workbook_plus_rocketapi"
+    assert payload["data_source"]["rocketapi_enabled"] is True
     assert payload["data_source"]["instagram_private_insights_enabled"] is False
     assert payload["metrics"]["total_influencers"] == payload["influencer_count"]
     assert payload["influencer_count"] > 0
@@ -60,38 +60,37 @@ def test_details_endpoint_can_fetch_public_instagram(monkeypatch):
     assert payload["public_instagram"]["results"][0]["profile"]["followers"] == 17000
 
 
-def test_details_endpoint_can_fetch_provider_insights(tmp_path):
-    provider_file = tmp_path / "insights.json"
-    provider_file.write_text(
-        """{
-          "profiles": [
-            {
-              "username": "awantika.rai.35",
-              "top_5_locations_percent": [{"location": "Mumbai", "percentage": 42}],
-              "female_gender_ratio_percent": 61,
-              "male_gender_ratio_percent": 39,
-              "18_24_age_ratio_percent": 20,
-              "25_34_age_ratio_percent": 55,
-              "35_45_age_ratio_percent": 20,
-              "45_plus_age_ratio_percent": 5,
-              "engagement_rate_per_reach_percent": 8.4,
-              "followers": 17000,
-              "avg_video_reach_last_10": 12000,
-              "avg_video_views_last_10": 9800
-            }
-          ]
-        }""",
-        encoding="utf-8",
-    )
+def test_details_endpoint_can_fetch_rocketapi(monkeypatch):
+    def fake_fetch(records, *, token=None):
+        return {
+            "provider": {"name": "rocketapi", "configured": True},
+            "count": 1,
+            "complete_count": 1,
+            "results": [
+                {
+                    "ok": True,
+                    "username": "awantika.rai.35",
+                    "insights": {
+                        "followers_summary": {"total": 17000},
+                        "avg_video_views_last_10": 9800,
+                        "avg_video_reach_last_10": 12000,
+                        "engagement_rate_per_reach_percent": 8.4,
+                    },
+                    "missing_fields": [],
+                    "error": None,
+                }
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr("influencer_service.app.fetch_rocketapi_insights_for_records", fake_fetch)
     client = create_app().test_client()
 
-    response = client.get(
-        f"/api/details?name=Awantika&include_provider_insights=1&insights_file={provider_file}"
-    )
+    response = client.get("/api/details?name=Awantika&include_rocketapi=1&rocketapi_token=test-token")
     payload = response.get_json()
 
     assert response.status_code == 200
-    assert payload["provider_insights"]["provider"]["mode"] == "json_file"
+    assert payload["provider_insights"]["provider"]["name"] == "rocketapi"
     assert payload["provider_insights"]["complete_count"] == 1
     insights = payload["provider_insights"]["results"][0]["insights"]
     assert insights["followers_summary"]["total"] == 17000

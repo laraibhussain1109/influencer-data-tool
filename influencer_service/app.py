@@ -8,21 +8,21 @@ from typing import Any
 from flask import Flask, jsonify, render_template_string, request
 
 from influencer_service.analytics import build_metrics, detect_columns, filter_records, normalize_records
-from influencer_service.insights_provider import fetch_insights_for_records
+from influencer_service.rocketapi_insights import DEFAULT_ROCKETAPI_TOKEN, fetch_rocketapi_insights_for_records
 from influencer_service.instagram_public import fetch_public_profiles
 from influencer_service.xlsx_reader import load_first_sheet
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKBOOK = REPO_ROOT / "influencers.xlsx"
 DATA_SOURCE_DISCLOSURE = {
-    "mode": "workbook_plus_provider_insights",
-    "instagram_public_fetch_enabled": True,
-    "provider_insights_enabled": True,
+    "mode": "workbook_plus_rocketapi",
+    "instagram_public_fetch_enabled": False,
+    "rocketapi_enabled": True,
     "instagram_private_insights_enabled": False,
     "message": (
-        "This service calculates workbook metrics and can fetch complete requested "
-        "Instagram details from a configured provider API or JSON export. The old "
-        "public-page fetcher remains available as a best-effort fallback only."
+        "This service calculates workbook metrics and fetches Instagram details "
+        "through RocketAPI using your API key. It does not rely on logged-out "
+        "Instagram page scraping."
     ),
     "provider_fields": [
         "top_5_locations_percent",
@@ -38,9 +38,9 @@ DATA_SOURCE_DISCLOSURE = {
         "avg_video_views_last_10",
     ],
     "private_insight_requirements": [
-        "Instagram Graph API or approved provider integration",
-        "Creator/Business account authorization from each influencer",
-        "Private audience demographics, reach, and engagement insight permissions",
+        "RocketAPI account and API key",
+        "RocketAPI endpoints enabled for profile and media data",
+        "Any private insight permissions required by your RocketAPI plan",
     ],
 }
 
@@ -50,7 +50,7 @@ FETCH_DETAILS_PAGE = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Instagram Insights Provider Fetcher</title>
+  <title>RocketAPI Instagram Insights Fetcher</title>
   <style>
     :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f6f7fb; color: #172033; }
@@ -82,24 +82,24 @@ FETCH_DETAILS_PAGE = """
 <body>
   <main>
     <section class="hero">
-      <h1>Instagram insights provider fetcher</h1>
-      <p>Read Instagram links from the workbook and fetch the complete requested details from a configured provider API or JSON export. This avoids the unreliable logged-out Instagram page scraping path.</p>
+      <h1>RocketAPI Instagram insights fetcher</h1>
+      <p>Read Instagram links from the workbook and fetch details through RocketAPI. Replace the placeholder key with your RocketAPI key before running the fetch.</p>
       <div class="controls">
         <input id="fileInput" aria-label="Workbook path" placeholder="Workbook path" value="{{ default_workbook }}">
         <button id="fetchButton">Calculate workbook details</button>
-        <input id="providerFileInput" aria-label="Provider JSON path" placeholder="Optional provider JSON path">
-        <button id="insightsFetchButton" type="button">Fetch complete insights</button>
+        <input id="rocketApiTokenInput" aria-label="RocketAPI key" placeholder="RocketAPI API key" value="{{ rocketapi_token }}">
+        <button id="insightsFetchButton" type="button">Fetch RocketAPI details</button>
       </div>
     </section>
 
-    <div id="notice" class="notice"><strong>Data source:</strong> Workbook + configured insights provider. Set a provider JSON path or configure INSTAGRAM_INSIGHTS_API_URL to fetch all requested fields.</div>
+    <div id="notice" class="notice"><strong>Data source:</strong> Workbook + RocketAPI. The bundled key is placeholder text; paste your own RocketAPI key to fetch live details.</div>
     <section id="results" class="grid" aria-live="polite"></section>
   </main>
 
   <script>
     const button = document.querySelector('#fetchButton');
     const fileInput = document.querySelector('#fileInput');
-    const providerFileInput = document.querySelector('#providerFileInput');
+    const rocketApiTokenInput = document.querySelector('#rocketApiTokenInput');
     const insightsFetchButton = document.querySelector('#insightsFetchButton');
     const results = document.querySelector('#results');
     const notice = document.querySelector('#notice');
@@ -151,7 +151,7 @@ FETCH_DETAILS_PAGE = """
     function renderSourceDisclosure(payload) {
       const requirements = (payload.data_source.private_insight_requirements || []).map(item => `<li>${item}</li>`).join('');
       const fields = (payload.data_source.provider_fields || []).map(item => `<li>${item}</li>`).join('');
-      return `<article class="card full"><h2>Data source disclosure</h2><p>${payload.data_source.message}</p><p class="muted">Complete fields requested from the configured provider:</p><ul>${fields}</ul><p class="muted">Provider/API setup must include:</p><ul>${requirements}</ul></article>`;
+      return `<article class="card full"><h2>Data source disclosure</h2><p>${payload.data_source.message}</p><p class="muted">Complete fields requested from RocketAPI:</p><ul>${fields}</ul><p class="muted">RocketAPI setup must include:</p><ul>${requirements}</ul></article>`;
     }
 
     function renderProviderInsights(payload) {
@@ -162,7 +162,7 @@ FETCH_DETAILS_PAGE = """
         return `<tr><td>${fmt(result.username)}</td><td>${fmt(followers.total || followers.average)}</td><td>${fmt(insights.avg_video_views_last_10)}</td><td>${fmt(insights.avg_video_reach_last_10)}</td><td>${fmt(insights.engagement_rate_per_reach_percent)}%</td><td>${result.ok ? 'Complete' : `Missing: ${(result.missing_fields || []).join(', ')}`}</td></tr>`;
       }).join('');
       const provider = payload.provider_insights.provider || {};
-      return `<article class="card full"><h2>Complete insights fetched (${payload.provider_insights.complete_count}/${payload.provider_insights.count})</h2><p class="muted">Provider mode: ${provider.mode}. Configure a provider file/API if results are missing.</p><table><thead><tr><th>Username</th><th>Followers</th><th>Avg. video views</th><th>Avg. video reach</th><th>Engagement / reach</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No provider insights were returned.</td></tr>'}</tbody></table></article>`;
+      return `<article class="card full"><h2>RocketAPI details fetched (${payload.provider_insights.complete_count}/${payload.provider_insights.count})</h2><p class="muted">Provider: ${provider.name}. Missing fields mean RocketAPI did not return that metric for the profile/plan.</p><table><thead><tr><th>Username</th><th>Followers</th><th>Avg. video views</th><th>Avg. video reach</th><th>Engagement / reach</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No provider insights were returned.</td></tr>'}</tbody></table></article>`;
     }
 
     function renderMissing(payload) {
@@ -180,7 +180,7 @@ FETCH_DETAILS_PAGE = """
     function workbookParams() {
       const params = new URLSearchParams();
       if (fileInput.value.trim()) params.set('file', fileInput.value.trim());
-      if (providerFileInput.value.trim()) params.set('insights_file', providerFileInput.value.trim());
+      if (rocketApiTokenInput.value.trim()) params.set('rocketapi_token', rocketApiTokenInput.value.trim());
       return params;
     }
 
@@ -188,11 +188,11 @@ FETCH_DETAILS_PAGE = """
       button.disabled = true;
       insightsFetchButton.disabled = true;
       button.textContent = includeInsights ? 'Fetching insights...' : 'Calculating...';
-      insightsFetchButton.textContent = includeInsights ? 'Fetching insights...' : 'Fetch complete insights';
+      insightsFetchButton.textContent = includeInsights ? 'Fetching RocketAPI...' : 'Fetch RocketAPI details';
       notice.style.display = 'block';
       results.innerHTML = '';
       const params = workbookParams();
-      if (includeInsights) params.set('include_provider_insights', '1');
+      if (includeInsights) params.set('include_rocketapi', '1');
       try {
         const response = await fetch(`/api/details?${params.toString()}`);
         const payload = await response.json();
@@ -223,7 +223,7 @@ FETCH_DETAILS_PAGE = """
         button.disabled = false;
         insightsFetchButton.disabled = false;
         button.textContent = 'Calculate workbook details';
-        insightsFetchButton.textContent = 'Fetch complete insights';
+        insightsFetchButton.textContent = 'Fetch RocketAPI details';
       }
     }
 
@@ -240,7 +240,11 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index() -> str:
-        return render_template_string(FETCH_DETAILS_PAGE, default_workbook=str(DEFAULT_WORKBOOK))
+        return render_template_string(
+            FETCH_DETAILS_PAGE,
+            default_workbook=str(DEFAULT_WORKBOOK),
+            rocketapi_token=DEFAULT_ROCKETAPI_TOKEN,
+        )
 
     @app.get("/health")
     def health() -> tuple[dict[str, str], int]:
@@ -268,7 +272,7 @@ def create_app() -> Flask:
         filters = _filters_from_request()
         filtered = filter_records(records, filters)
         include_public = _truthy(request.args.get("include_public_instagram"))
-        include_provider = _truthy(request.args.get("include_provider_insights"))
+        include_provider = _truthy(request.args.get("include_provider_insights")) or _truthy(request.args.get("include_rocketapi"))
         payload = _details_payload(filtered, workbook)
         if include_provider:
             payload["provider_insights"] = _fetch_provider_insights_for_records(filtered)
@@ -276,7 +280,7 @@ def create_app() -> Flask:
             payload["public_instagram"] = _fetch_public_instagram_for_records(filtered)
         return jsonify(payload)
 
-    @app.post("/api/fetch-insights")
+    @app.post("/api/fetch-rocketapi")
     def provider_insights() -> Any:
         records, workbook = _load_records_from_request()
         filtered = filter_records(records, _filters_from_request())
@@ -318,7 +322,7 @@ def _details_payload(records: list[dict[str, Any]], workbook: Path) -> dict[str,
 
 
 def _fetch_provider_insights_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
-    return fetch_insights_for_records(records, provider_file=request.args.get("insights_file"))
+    return fetch_rocketapi_insights_for_records(records, token=request.args.get("rocketapi_token"))
 
 
 def _fetch_public_instagram_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
