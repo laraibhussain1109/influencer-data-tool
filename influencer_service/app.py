@@ -7,23 +7,35 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template_string, request
 
-from influencer_service.analytics import build_metrics, filter_records, normalize_records
+from influencer_service.analytics import build_metrics, detect_columns, filter_records, normalize_records
+from influencer_service.instagram_public import fetch_public_profiles
 from influencer_service.xlsx_reader import load_first_sheet
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKBOOK = REPO_ROOT / "influencers.xlsx"
 DATA_SOURCE_DISCLOSURE = {
-    "mode": "workbook_only",
-    "instagram_api_enabled": False,
+    "mode": "workbook_plus_public_instagram",
+    "instagram_public_fetch_enabled": True,
+    "instagram_private_insights_enabled": False,
     "message": (
-        "This service does not call Instagram, scrape Instagram, or fetch private "
-        "Instagram Insights. It calculates metrics only from columns already present "
-        "in the selected workbook."
+        "This service can fetch public Instagram profile-page metadata such as "
+        "followers and recent public video views for links in the workbook. It does "
+        "not log in, bypass privacy controls, or fetch private audience Insights."
     ),
-    "live_instagram_requirements": [
+    "public_fields": [
+        "followers",
+        "following",
+        "posts",
+        "full_name",
+        "biography",
+        "is_private",
+        "is_verified",
+        "avg_video_views_last_10",
+    ],
+    "private_insight_requirements": [
         "Instagram Graph API or approved provider integration",
         "Creator/Business account authorization from each influencer",
-        "Insight columns such as audience demographics, reach, and video views",
+        "Private audience demographics, reach, and engagement insight permissions",
     ],
 }
 
@@ -33,7 +45,7 @@ FETCH_DETAILS_PAGE = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Workbook Influencer Insights</title>
+  <title>Instagram Public Data Fetcher</title>
   <style>
     :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f6f7fb; color: #172033; }
@@ -65,21 +77,23 @@ FETCH_DETAILS_PAGE = """
 <body>
   <main>
     <section class="hero">
-      <h1>Workbook influencer insights</h1>
-      <p>Click once to read the workbook and calculate every requested metric that is already present in the sheet. This app does not call Instagram or scrape Instagram; private Insights must be supplied through a compliant export, API, or provider feed.</p>
+      <h1>Instagram public data fetcher</h1>
+      <p>Read the Instagram links in your workbook, calculate sheet metrics, and optionally fetch public profile-page data such as followers and recent public video views. Private audience Insights still require account authorization/API access.</p>
       <div class="controls">
         <input id="fileInput" aria-label="Workbook path" placeholder="Workbook path" value="{{ default_workbook }}">
         <button id="fetchButton">Calculate workbook details</button>
+        <button id="publicFetchButton" type="button">Fetch public Instagram data</button>
       </div>
     </section>
 
-    <div id="notice" class="notice"><strong>Data source:</strong> Workbook only. No live Instagram API or scraper is configured.</div>
+    <div id="notice" class="notice"><strong>Data source:</strong> Workbook + public Instagram pages. Fetching public data may fail if Instagram rate-limits or blocks automated requests.</div>
     <section id="results" class="grid" aria-live="polite"></section>
   </main>
 
   <script>
     const button = document.querySelector('#fetchButton');
     const fileInput = document.querySelector('#fileInput');
+    const publicFetchButton = document.querySelector('#publicFetchButton');
     const results = document.querySelector('#results');
     const notice = document.querySelector('#notice');
 
@@ -128,8 +142,19 @@ FETCH_DETAILS_PAGE = """
 
 
     function renderSourceDisclosure(payload) {
-      const requirements = (payload.data_source.live_instagram_requirements || []).map(item => `<li>${item}</li>`).join('');
-      return `<article class="card full"><h2>Data source disclosure</h2><p>${payload.data_source.message}</p><p class="muted">For live Instagram Insights, add:</p><ul>${requirements}</ul></article>`;
+      const requirements = (payload.data_source.private_insight_requirements || []).map(item => `<li>${item}</li>`).join('');
+      const fields = (payload.data_source.public_fields || []).map(item => `<li>${item}</li>`).join('');
+      return `<article class="card full"><h2>Data source disclosure</h2><p>${payload.data_source.message}</p><p class="muted">Public fields this fetcher tries to collect:</p><ul>${fields}</ul><p class="muted">For private audience Insights, add:</p><ul>${requirements}</ul></article>`;
+    }
+
+    function renderPublicInstagram(payload) {
+      if (!payload.public_instagram) return '';
+      const rows = (payload.public_instagram.results || []).map(result => {
+        const profile = result.profile || {};
+        const statusText = result.ok ? 'Fetched' : `Failed: ${result.error}`;
+        return `<tr><td>${fmt(profile.username)}</td><td>${fmt(profile.followers)}</td><td>${fmt(profile.posts)}</td><td>${fmt(profile.avg_video_views_last_10)}</td><td>${fmt(profile.videos_found)}</td><td>${statusText}</td></tr>`;
+      }).join('');
+      return `<article class="card full"><h2>Public Instagram data fetched (${payload.public_instagram.count})</h2><table><thead><tr><th>Username</th><th>Followers</th><th>Posts</th><th>Avg. video views</th><th>Videos found</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No Instagram links were fetched.</td></tr>'}</tbody></table></article>`;
     }
 
     function renderMissing(payload) {
@@ -144,13 +169,21 @@ FETCH_DETAILS_PAGE = """
       return `<article class="card full"><h2>Influencers loaded (${payload.influencer_count})</h2><table><thead><tr><th>Name</th><th>Followers</th><th>Gender</th><th>Location</th></tr></thead><tbody>${rows}</tbody></table></article>`;
     }
 
-    async function fetchDetails() {
-      button.disabled = true;
-      button.textContent = 'Calculating...';
-      notice.style.display = 'block';
-      results.innerHTML = '';
+    function workbookParams() {
       const params = new URLSearchParams();
       if (fileInput.value.trim()) params.set('file', fileInput.value.trim());
+      return params;
+    }
+
+    async function fetchDetails({ includePublic = false } = {}) {
+      button.disabled = true;
+      publicFetchButton.disabled = true;
+      button.textContent = includePublic ? 'Fetching public data...' : 'Calculating...';
+      publicFetchButton.textContent = includePublic ? 'Fetching public data...' : 'Fetch public Instagram data';
+      notice.style.display = 'block';
+      results.innerHTML = '';
+      const params = workbookParams();
+      if (includePublic) params.set('include_public_instagram', '1');
       try {
         const response = await fetch(`/api/details?${params.toString()}`);
         const payload = await response.json();
@@ -170,6 +203,7 @@ FETCH_DETAILS_PAGE = """
           metricCard(labels.avg_video_views_last_10, fmt(m.avg_video_views_last_10), 'avg_video_views_last_10', payload),
           renderLocations(m.top_5_locations_percent, payload),
           renderFollowers(m.followers),
+          renderPublicInstagram(payload),
           renderMissing(payload),
           renderInfluencers(payload)
         ].join('');
@@ -178,11 +212,14 @@ FETCH_DETAILS_PAGE = """
         notice.style.display = 'block';
       } finally {
         button.disabled = false;
+        publicFetchButton.disabled = false;
         button.textContent = 'Calculate workbook details';
+        publicFetchButton.textContent = 'Fetch public Instagram data';
       }
     }
 
-    button.addEventListener('click', fetchDetails);
+    button.addEventListener('click', () => fetchDetails());
+    publicFetchButton.addEventListener('click', () => fetchDetails({ includePublic: true }));
   </script>
 </body>
 </html>
@@ -221,15 +258,19 @@ def create_app() -> Flask:
         records, workbook = _load_records_from_request()
         filters = _filters_from_request()
         filtered = filter_records(records, filters)
-        return jsonify(
-            {
-                "source_file": str(workbook),
-                "data_source": DATA_SOURCE_DISCLOSURE,
-                "metrics": build_metrics(filtered),
-                "influencer_count": len(filtered),
-                "influencers": normalize_records(filtered),
-            }
-        )
+        include_public = _truthy(request.args.get("include_public_instagram"))
+        payload = _details_payload(filtered, workbook)
+        if include_public:
+            payload["public_instagram"] = _fetch_public_instagram_for_records(filtered)
+        return jsonify(payload)
+
+    @app.post("/api/fetch-public-instagram")
+    def public_instagram() -> Any:
+        records, workbook = _load_records_from_request()
+        filtered = filter_records(records, _filters_from_request())
+        payload = _details_payload(filtered, workbook)
+        payload["public_instagram"] = _fetch_public_instagram_for_records(filtered)
+        return jsonify(payload)
 
     @app.get("/api/influencers")
     def influencers() -> Any:
@@ -244,6 +285,34 @@ def create_app() -> Flask:
         )
 
     return app
+
+
+def _details_payload(records: list[dict[str, Any]], workbook: Path) -> dict[str, Any]:
+    return {
+        "source_file": str(workbook),
+        "data_source": DATA_SOURCE_DISCLOSURE,
+        "metrics": build_metrics(records),
+        "influencer_count": len(records),
+        "influencers": normalize_records(records),
+    }
+
+
+def _fetch_public_instagram_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    columns = detect_columns(records)
+    if not columns.instagram_link:
+        return {"count": 0, "results": [], "errors": ["No Instagram link column was found."]}
+    links = [str(row.get(columns.instagram_link, "")).strip() for row in records]
+    links = [link for link in links if link]
+    results = fetch_public_profiles(links)
+    return {
+        "count": len(results),
+        "results": results,
+        "errors": [result["error"] for result in results if not result.get("ok")],
+    }
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "on"}
 
 
 def _filters_from_request() -> dict[str, str]:

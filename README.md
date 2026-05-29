@@ -1,10 +1,10 @@
 # Influencer Data Tool
 
-A small Flask service that reads the `influencers.xlsx` workbook in this repository and exposes influencer analytics over HTTP, plus a one-click browser page for calculating the requested insight summary from workbook data.
+A small Flask service that reads the `influencers.xlsx` workbook, calculates workbook-derived influencer metrics, and can fetch public Instagram profile-page data from the Instagram links in the sheet.
 
-## What it returns
+## What it can return
 
-The main metrics endpoint returns:
+The workbook metrics endpoint returns:
 
 - Top 5 locations (%)
 - Female gender ratio (%)
@@ -18,19 +18,24 @@ The main metrics endpoint returns:
 - Avg. video reach (last 10 video average)
 - Avg. video views (last 10 video average)
 
-If the workbook does not contain the columns required for a metric, the API returns `null` for that metric and lists it under `unavailable_fields` rather than inventing data.
+The public Instagram fetcher can additionally try to fetch these public profile-page fields for each Instagram link in the workbook:
 
-> **Important:** this app does **not** call Instagram, scrape Instagram, or fetch private Instagram Insights directly. Private Instagram Insights such as audience age splits, audience locations, reach, and recent video views must come from a compliant Instagram export/API/provider feed in the workbook before the tool can calculate them.
+- Followers
+- Following
+- Post count
+- Public full name and bio
+- Public verified/private flags
+- Avg. video views from recent public videos when Instagram exposes those values in the public profile HTML
 
-## Getting live Instagram Insights
+If the workbook or public Instagram page does not contain the columns/data required for a metric, the API returns `null` for that metric and lists workbook-only missing metrics under `unavailable_fields` rather than inventing data.
 
-To truly fetch these fields from Instagram instead of reading them from the workbook, the app needs a separate integration that is not present in this repository today:
+> **Important:** this app does not log in to Instagram, bypass privacy controls, or fetch private audience Insights directly. It only reads the workbook and public Instagram profile pages. Private audience locations, gender split, age split, reach, and engagement insights still require a compliant Instagram Graph API or approved provider integration with account authorization.
 
-1. Use Instagram Graph API or an approved analytics/provider API.
-2. Get Creator/Business account authorization from each influencer whose private insights are required.
-3. Store the returned audience demographics, reach, video reach, and video view fields in the workbook columns that the analytics layer can detect.
+## Public Instagram fetching limitations
 
-The service intentionally does not include a scraper because arbitrary scraping of private Instagram Insights is not a reliable or compliant way to obtain these metrics.
+Instagram can rate-limit, block, or change public page HTML at any time. The public fetcher is best-effort and reports per-profile errors in `public_instagram.errors` instead of pretending unavailable data exists.
+
+For a production-grade solution, use an approved Instagram Graph API/provider integration and store returned fields in the workbook/API schema.
 
 ## Run locally
 
@@ -41,7 +46,10 @@ pip install -r requirements.txt
 flask --app influencer_service.app run --debug
 ```
 
-Then open `http://127.0.0.1:5000/` and click **Calculate workbook details**. You can keep the default workbook path or paste another `.xlsx` path into the input before calculating.
+Then open `http://127.0.0.1:5000/` and choose one of the buttons:
+
+- **Calculate workbook details** reads the workbook only.
+- **Fetch public Instagram data** reads the workbook and then attempts to fetch public data for the Instagram links in the sheet.
 
 ## API
 
@@ -57,7 +65,7 @@ curl http://127.0.0.1:5000/health
 curl http://127.0.0.1:5000/
 ```
 
-### Aggregate metrics
+### Aggregate workbook metrics
 
 ```bash
 curl http://127.0.0.1:5000/api/metrics
@@ -75,7 +83,25 @@ curl "http://127.0.0.1:5000/api/metrics?file=/path/to/influencers.xlsx"
 curl http://127.0.0.1:5000/api/details
 ```
 
-The combined endpoint powers the **Calculate workbook details** button and returns `data_source`, `metrics`, `influencer_count`, and normalized `influencers` in one response. `data_source.instagram_api_enabled` is `false` so consumers cannot mistake workbook calculations for live Instagram API results. It accepts the same `file`, `name`, `city`, `state`, `gender`, and `language` query parameters as the other endpoints.
+Include public Instagram fetching in the combined details payload:
+
+```bash
+curl "http://127.0.0.1:5000/api/details?include_public_instagram=1"
+```
+
+The combined endpoint returns `data_source`, `metrics`, `influencer_count`, normalized `influencers`, and optionally `public_instagram`. It accepts the same `file`, `name`, `city`, `state`, `gender`, and `language` query parameters as the other endpoints.
+
+### Fetch public Instagram data
+
+```bash
+curl -X POST http://127.0.0.1:5000/api/fetch-public-instagram
+```
+
+Filter before fetching:
+
+```bash
+curl -X POST "http://127.0.0.1:5000/api/fetch-public-instagram?city=Visakhapatnam&gender=Female"
+```
 
 ### Influencer records
 
