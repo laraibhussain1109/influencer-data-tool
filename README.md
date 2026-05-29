@@ -53,6 +53,7 @@ Then open `http://127.0.0.1:5000/` and choose one of the buttons:
 
 - **Calculate workbook details** reads the workbook only.
 - **Fetch RocketAPI details** reads Instagram links from the workbook and calls RocketAPI using the key in the UI or `ROCKETAPI_TOKEN`.
+- **Update Excel details** fetches RocketAPI details and immediately writes them back into the selected `.xlsx` file.
 
 ## API
 
@@ -86,13 +87,21 @@ curl "http://127.0.0.1:5000/api/metrics?file=/path/to/influencers.xlsx"
 curl "http://127.0.0.1:5000/api/details?include_rocketapi=1&rocketapi_token=your-real-rocketapi-key"
 ```
 
-The combined endpoint returns `data_source`, workbook `metrics`, `influencer_count`, normalized `influencers`, and `provider_insights` when RocketAPI fetching is enabled.
+The combined endpoint returns `data_source`, workbook `metrics`, `influencer_count`, normalized `influencers`, and `provider_insights` when RocketAPI fetching is enabled. Add `update_workbook=1` to also save the fetched details into the workbook immediately.
 
 ### Fetch RocketAPI details
 
 ```bash
 curl -X POST "http://127.0.0.1:5000/api/fetch-rocketapi?rocketapi_token=your-real-rocketapi-key"
 ```
+
+### Update Excel with RocketAPI details
+
+```bash
+curl -X POST "http://127.0.0.1:5000/api/update-workbook?rocketapi_token=your-real-rocketapi-key"
+```
+
+This appends/updates the following columns in the first worksheet: RocketAPI status fields plus all requested metrics (locations, gender ratios, age ratios, engagement per reach, followers summary, average video reach, and average video views).
 
 Filter before fetching:
 

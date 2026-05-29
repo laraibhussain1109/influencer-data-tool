@@ -95,3 +95,38 @@ def test_details_endpoint_can_fetch_rocketapi(monkeypatch):
     insights = payload["provider_insights"]["results"][0]["insights"]
     assert insights["followers_summary"]["total"] == 17000
     assert insights["avg_video_views_last_10"] == 9800
+
+
+def test_details_endpoint_can_update_workbook(monkeypatch, tmp_path):
+    workbook = tmp_path / "influencers.xlsx"
+    workbook.write_bytes(__import__("pathlib").Path("influencers.xlsx").read_bytes())
+
+    def fake_fetch(records, *, token=None):
+        return {
+            "provider": {"name": "rocketapi", "configured": True},
+            "count": 1,
+            "complete_count": 1,
+            "results": [
+                {
+                    "ok": True,
+                    "username": "awantika.rai.35",
+                    "insights": {
+                        "followers_summary": {"total": 17000},
+                        "avg_video_views_last_10": 9800,
+                    },
+                    "missing_fields": [],
+                    "error": None,
+                }
+            ],
+            "errors": [],
+        }
+
+    monkeypatch.setattr("influencer_service.app.fetch_rocketapi_insights_for_records", fake_fetch)
+    client = create_app().test_client()
+
+    response = client.get(f"/api/details?file={workbook}&name=Awantika&update_workbook=1&rocketapi_token=test-token")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["workbook_update"]["updated_rows"] == 1
+    assert "Avg. video views (last 10 video average)" in payload["workbook_update"]["written_columns"]

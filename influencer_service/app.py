@@ -11,6 +11,7 @@ from influencer_service.analytics import build_metrics, detect_columns, filter_r
 from influencer_service.rocketapi_insights import DEFAULT_ROCKETAPI_TOKEN, fetch_rocketapi_insights_for_records
 from influencer_service.instagram_public import fetch_public_profiles
 from influencer_service.xlsx_reader import load_first_sheet
+from influencer_service.xlsx_writer import update_workbook_with_insights
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKBOOK = REPO_ROOT / "influencers.xlsx"
@@ -89,6 +90,7 @@ FETCH_DETAILS_PAGE = """
         <button id="fetchButton">Calculate workbook details</button>
         <input id="rocketApiTokenInput" aria-label="RocketAPI key" placeholder="RocketAPI API key" value="{{ rocketapi_token }}">
         <button id="insightsFetchButton" type="button">Fetch RocketAPI details</button>
+        <button id="updateDetailsButton" type="button">Update Excel details</button>
       </div>
     </section>
 
@@ -101,6 +103,7 @@ FETCH_DETAILS_PAGE = """
     const fileInput = document.querySelector('#fileInput');
     const rocketApiTokenInput = document.querySelector('#rocketApiTokenInput');
     const insightsFetchButton = document.querySelector('#insightsFetchButton');
+    const updateDetailsButton = document.querySelector('#updateDetailsButton');
     const results = document.querySelector('#results');
     const notice = document.querySelector('#notice');
 
@@ -165,6 +168,12 @@ FETCH_DETAILS_PAGE = """
       return `<article class="card full"><h2>RocketAPI details fetched (${payload.provider_insights.complete_count}/${payload.provider_insights.count})</h2><p class="muted">Provider: ${provider.name}. Missing fields mean RocketAPI did not return that metric for the profile/plan.</p><table><thead><tr><th>Username</th><th>Followers</th><th>Avg. video views</th><th>Avg. video reach</th><th>Engagement / reach</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No provider insights were returned.</td></tr>'}</tbody></table></article>`;
     }
 
+    function renderWorkbookUpdate(payload) {
+      if (!payload.workbook_update) return '';
+      const update = payload.workbook_update;
+      return `<article class="card full"><h2>Excel updated</h2><p>Updated rows: ${fmt(update.updated_rows)}</p><p class="muted">Workbook: ${fmt(update.workbook)}</p><p class="muted">Columns written: ${(update.written_columns || []).join(', ')}</p></article>`;
+    }
+
     function renderMissing(payload) {
       const entries = Object.entries(payload.metrics.unavailable_fields || {});
       if (!entries.length) return '';
@@ -184,15 +193,18 @@ FETCH_DETAILS_PAGE = """
       return params;
     }
 
-    async function fetchDetails({ includeInsights = false } = {}) {
+    async function fetchDetails({ includeInsights = false, updateWorkbook = false } = {}) {
       button.disabled = true;
       insightsFetchButton.disabled = true;
+      updateDetailsButton.disabled = true;
       button.textContent = includeInsights ? 'Fetching insights...' : 'Calculating...';
       insightsFetchButton.textContent = includeInsights ? 'Fetching RocketAPI...' : 'Fetch RocketAPI details';
+      updateDetailsButton.textContent = updateWorkbook ? 'Updating Excel...' : 'Update Excel details';
       notice.style.display = 'block';
       results.innerHTML = '';
       const params = workbookParams();
       if (includeInsights) params.set('include_rocketapi', '1');
+      if (updateWorkbook) params.set('update_workbook', '1');
       try {
         const response = await fetch(`/api/details?${params.toString()}`);
         const payload = await response.json();
@@ -213,6 +225,7 @@ FETCH_DETAILS_PAGE = """
           renderLocations(m.top_5_locations_percent, payload),
           renderFollowers(m.followers),
           renderProviderInsights(payload),
+          renderWorkbookUpdate(payload),
           renderMissing(payload),
           renderInfluencers(payload)
         ].join('');
@@ -222,13 +235,16 @@ FETCH_DETAILS_PAGE = """
       } finally {
         button.disabled = false;
         insightsFetchButton.disabled = false;
+        updateDetailsButton.disabled = false;
         button.textContent = 'Calculate workbook details';
         insightsFetchButton.textContent = 'Fetch RocketAPI details';
+        updateDetailsButton.textContent = 'Update Excel details';
       }
     }
 
     button.addEventListener('click', () => fetchDetails());
     insightsFetchButton.addEventListener('click', () => fetchDetails({ includeInsights: true }));
+    updateDetailsButton.addEventListener('click', () => fetchDetails({ includeInsights: true, updateWorkbook: true }));
   </script>
 </body>
 </html>
@@ -273,11 +289,23 @@ def create_app() -> Flask:
         filtered = filter_records(records, filters)
         include_public = _truthy(request.args.get("include_public_instagram"))
         include_provider = _truthy(request.args.get("include_provider_insights")) or _truthy(request.args.get("include_rocketapi"))
+        update_workbook = _truthy(request.args.get("update_workbook"))
         payload = _details_payload(filtered, workbook)
-        if include_provider:
+        if include_provider or update_workbook:
             payload["provider_insights"] = _fetch_provider_insights_for_records(filtered)
+        if update_workbook:
+            payload["workbook_update"] = update_workbook_with_insights(workbook, payload["provider_insights"])
         if include_public:
             payload["public_instagram"] = _fetch_public_instagram_for_records(filtered)
+        return jsonify(payload)
+
+    @app.post("/api/update-workbook")
+    def update_workbook() -> Any:
+        records, workbook = _load_records_from_request()
+        filtered = filter_records(records, _filters_from_request())
+        payload = _details_payload(filtered, workbook)
+        payload["provider_insights"] = _fetch_provider_insights_for_records(filtered)
+        payload["workbook_update"] = update_workbook_with_insights(workbook, payload["provider_insights"])
         return jsonify(payload)
 
     @app.post("/api/fetch-rocketapi")
