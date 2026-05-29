@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template_string, request
 
 from influencer_service.analytics import build_metrics, filter_records, normalize_records
 from influencer_service.xlsx_reader import load_first_sheet
@@ -13,9 +13,167 @@ from influencer_service.xlsx_reader import load_first_sheet
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKBOOK = REPO_ROOT / "influencers.xlsx"
 
+FETCH_DETAILS_PAGE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Influencer Insights Fetcher</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f6f7fb; color: #172033; }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 48px; }
+    .hero { background: linear-gradient(135deg, #512bd4, #d62976); color: white; border-radius: 24px; padding: 32px; box-shadow: 0 20px 50px rgba(35, 31, 82, .18); }
+    .hero h1 { margin: 0 0 8px; font-size: clamp(2rem, 4vw, 3.4rem); line-height: 1; }
+    .hero p { max-width: 760px; margin: 0; color: rgba(255,255,255,.86); font-size: 1.05rem; }
+    .controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; margin-top: 24px; }
+    input { border: 0; border-radius: 14px; padding: 14px 16px; font: inherit; box-shadow: inset 0 0 0 1px rgba(23, 32, 51, .12); }
+    button { border: 0; border-radius: 14px; padding: 14px 20px; background: #111827; color: white; cursor: pointer; font-weight: 700; font: inherit; }
+    button:disabled { cursor: wait; opacity: .68; }
+    .notice { margin-top: 18px; padding: 14px 16px; border-radius: 14px; background: #fff7ed; color: #9a3412; display: none; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
+    .card { background: white; border-radius: 18px; padding: 18px; box-shadow: 0 12px 34px rgba(15, 23, 42, .08); }
+    .card h2, .card h3 { margin: 0 0 10px; font-size: .94rem; color: #64748b; text-transform: uppercase; letter-spacing: .08em; }
+    .metric { font-size: 2rem; font-weight: 800; color: #0f172a; }
+    .wide { grid-column: span 2; }
+    .full { grid-column: 1 / -1; }
+    table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+    th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+    th { color: #64748b; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; }
+    .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 9px; font-size: .78rem; font-weight: 700; }
+    .ok { background: #dcfce7; color: #166534; }
+    .missing { background: #fee2e2; color: #991b1b; }
+    .muted { color: #64748b; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } .wide { grid-column: auto; } .controls { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Instagram influencer insights</h1>
+      <p>Click once to read the workbook, compute every requested metric that is present, and clearly flag fields that need an Instagram Insights/API export or provider feed.</p>
+      <div class="controls">
+        <input id="fileInput" aria-label="Workbook path" placeholder="Workbook path" value="{{ default_workbook }}">
+        <button id="fetchButton">Fetch details</button>
+      </div>
+    </section>
+
+    <div id="notice" class="notice"></div>
+    <section id="results" class="grid" aria-live="polite"></section>
+  </main>
+
+  <script>
+    const button = document.querySelector('#fetchButton');
+    const fileInput = document.querySelector('#fileInput');
+    const results = document.querySelector('#results');
+    const notice = document.querySelector('#notice');
+
+    const labels = {
+      top_5_locations_percent: 'Top 5 locations (%)',
+      female_gender_ratio_percent: 'Female gender ratio (%)',
+      male_gender_ratio_percent: 'Male gender ratio (%)',
+      '18_24_age_ratio_percent': '18-24 age ratio (%)',
+      '25_34_age_ratio_percent': '25-34 age ratio (%)',
+      '35_45_age_ratio_percent': '35-45 age ratio (%)',
+      '45_plus_age_ratio_percent': '45+ age ratio (%)',
+      engagement_rate_per_reach_percent: 'Engagement rate per reach',
+      followers: 'Followers summary',
+      avg_video_reach_last_10: 'Avg. video reach (last 10)',
+      avg_video_views_last_10: 'Avg. video views (last 10)'
+    };
+
+    function fmt(value) {
+      if (value === null || value === undefined || value === '') return 'Unavailable';
+      if (typeof value === 'number') return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      return value;
+    }
+
+    function status(key, payload) {
+      const missing = payload.metrics.unavailable_fields || {};
+      return missing[key] ? '<span class="pill missing">Needs source data</span>' : '<span class="pill ok">Fetched</span>';
+    }
+
+    function metricCard(title, value, key, payload) {
+      return `<article class="card"><h2>${title}</h2><div class="metric">${fmt(value)}</div><div>${status(key, payload)}</div></article>`;
+    }
+
+    function renderLocations(locations, payload) {
+      const rows = (locations || []).map(item => `<tr><td>${item.location}</td><td>${item.count}</td><td>${fmt(item.percentage)}%</td></tr>`).join('');
+      return `<article class="card wide"><h2>${labels.top_5_locations_percent}</h2>${status('top_5_locations_percent', payload)}<table><thead><tr><th>Location</th><th>Count</th><th>%</th></tr></thead><tbody>${rows || '<tr><td colspan="3" class="muted">No location columns found.</td></tr>'}</tbody></table></article>`;
+    }
+
+    function renderFollowers(summary) {
+      return `<article class="card wide"><h2>${labels.followers}</h2><table><tbody>
+        <tr><th>Total</th><td>${fmt(summary.total)}</td></tr>
+        <tr><th>Average</th><td>${fmt(summary.average)}</td></tr>
+        <tr><th>Min</th><td>${fmt(summary.min)}</td></tr>
+        <tr><th>Max</th><td>${fmt(summary.max)}</td></tr>
+      </tbody></table></article>`;
+    }
+
+    function renderMissing(payload) {
+      const entries = Object.entries(payload.metrics.unavailable_fields || {});
+      if (!entries.length) return '';
+      const rows = entries.map(([key, reason]) => `<tr><td>${labels[key] || key}</td><td>${reason}</td></tr>`).join('');
+      return `<article class="card full"><h2>Fields that need an insights export/provider</h2><p class="muted">The app does not invent private Instagram analytics. Add these columns to the workbook or connect a compliant provider feed, then click Fetch details again.</p><table><thead><tr><th>Requested detail</th><th>Why unavailable</th></tr></thead><tbody>${rows}</tbody></table></article>`;
+    }
+
+    function renderInfluencers(payload) {
+      const rows = payload.influencers.slice(0, 25).map(item => `<tr><td>${fmt(item.full_name)}</td><td>${fmt(item.followers)}</td><td>${fmt(item.gender)}</td><td>${fmt([item.city, item.state].filter(Boolean).join(', '))}</td></tr>`).join('');
+      return `<article class="card full"><h2>Influencers loaded (${payload.influencer_count})</h2><table><thead><tr><th>Name</th><th>Followers</th><th>Gender</th><th>Location</th></tr></thead><tbody>${rows}</tbody></table></article>`;
+    }
+
+    async function fetchDetails() {
+      button.disabled = true;
+      button.textContent = 'Fetching...';
+      notice.style.display = 'none';
+      results.innerHTML = '';
+      const params = new URLSearchParams();
+      if (fileInput.value.trim()) params.set('file', fileInput.value.trim());
+      try {
+        const response = await fetch(`/api/details?${params.toString()}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Unable to fetch details.');
+        const m = payload.metrics;
+        results.innerHTML = [
+          metricCard('Total influencers', m.total_influencers, 'total_influencers', payload),
+          metricCard(labels.female_gender_ratio_percent, `${fmt(m.female_gender_ratio_percent)}%`, 'female_gender_ratio_percent', payload),
+          metricCard(labels.male_gender_ratio_percent, `${fmt(m.male_gender_ratio_percent)}%`, 'male_gender_ratio_percent', payload),
+          metricCard(labels['18_24_age_ratio_percent'], `${fmt(m['18_24_age_ratio_percent'])}%`, '18_24_age_ratio_percent', payload),
+          metricCard(labels['25_34_age_ratio_percent'], `${fmt(m['25_34_age_ratio_percent'])}%`, '25_34_age_ratio_percent', payload),
+          metricCard(labels['35_45_age_ratio_percent'], `${fmt(m['35_45_age_ratio_percent'])}%`, '35_45_age_ratio_percent', payload),
+          metricCard(labels['45_plus_age_ratio_percent'], `${fmt(m['45_plus_age_ratio_percent'])}%`, '45_plus_age_ratio_percent', payload),
+          metricCard(labels.engagement_rate_per_reach_percent, `${fmt(m.engagement_rate_per_reach_percent)}%`, 'engagement_rate_per_reach_percent', payload),
+          metricCard(labels.avg_video_reach_last_10, fmt(m.avg_video_reach_last_10), 'avg_video_reach_last_10', payload),
+          metricCard(labels.avg_video_views_last_10, fmt(m.avg_video_views_last_10), 'avg_video_views_last_10', payload),
+          renderLocations(m.top_5_locations_percent, payload),
+          renderFollowers(m.followers),
+          renderMissing(payload),
+          renderInfluencers(payload)
+        ].join('');
+      } catch (error) {
+        notice.textContent = error.message;
+        notice.style.display = 'block';
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Fetch details';
+      }
+    }
+
+    button.addEventListener('click', fetchDetails);
+  </script>
+</body>
+</html>
+"""
+
 
 def create_app() -> Flask:
     app = Flask(__name__)
+
+    @app.get("/")
+    def index() -> str:
+        return render_template_string(FETCH_DETAILS_PAGE, default_workbook=str(DEFAULT_WORKBOOK))
 
     @app.get("/health")
     def health() -> tuple[dict[str, str], int]:
@@ -36,15 +194,24 @@ def create_app() -> Flask:
         payload["source_file"] = str(workbook)
         return jsonify(payload)
 
+    @app.get("/api/details")
+    def details() -> Any:
+        records, workbook = _load_records_from_request()
+        filters = _filters_from_request()
+        filtered = filter_records(records, filters)
+        return jsonify(
+            {
+                "source_file": str(workbook),
+                "metrics": build_metrics(filtered),
+                "influencer_count": len(filtered),
+                "influencers": normalize_records(filtered),
+            }
+        )
+
     @app.get("/api/influencers")
     def influencers() -> Any:
         records, workbook = _load_records_from_request()
-        filters = {
-            key: value
-            for key in ("name", "city", "state", "gender", "language")
-            if (value := request.args.get(key))
-        }
-        filtered = filter_records(records, filters)
+        filtered = filter_records(records, _filters_from_request())
         return jsonify(
             {
                 "source_file": str(workbook),
@@ -54,6 +221,14 @@ def create_app() -> Flask:
         )
 
     return app
+
+
+def _filters_from_request() -> dict[str, str]:
+    return {
+        key: value
+        for key in ("name", "city", "state", "gender", "language")
+        if (value := request.args.get(key))
+    }
 
 
 def _load_records_from_request() -> tuple[list[dict[str, Any]], Path]:
