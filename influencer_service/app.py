@@ -8,28 +8,33 @@ from typing import Any
 from flask import Flask, jsonify, render_template_string, request
 
 from influencer_service.analytics import build_metrics, detect_columns, filter_records, normalize_records
+from influencer_service.insights_provider import fetch_insights_for_records
 from influencer_service.instagram_public import fetch_public_profiles
 from influencer_service.xlsx_reader import load_first_sheet
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WORKBOOK = REPO_ROOT / "influencers.xlsx"
 DATA_SOURCE_DISCLOSURE = {
-    "mode": "workbook_plus_public_instagram",
+    "mode": "workbook_plus_provider_insights",
     "instagram_public_fetch_enabled": True,
+    "provider_insights_enabled": True,
     "instagram_private_insights_enabled": False,
     "message": (
-        "This service can fetch public Instagram profile-page metadata such as "
-        "followers and recent public video views for links in the workbook. It does "
-        "not log in, bypass privacy controls, or fetch private audience Insights."
+        "This service calculates workbook metrics and can fetch complete requested "
+        "Instagram details from a configured provider API or JSON export. The old "
+        "public-page fetcher remains available as a best-effort fallback only."
     ),
-    "public_fields": [
-        "followers",
-        "following",
-        "posts",
-        "full_name",
-        "biography",
-        "is_private",
-        "is_verified",
+    "provider_fields": [
+        "top_5_locations_percent",
+        "female_gender_ratio_percent",
+        "male_gender_ratio_percent",
+        "18_24_age_ratio_percent",
+        "25_34_age_ratio_percent",
+        "35_45_age_ratio_percent",
+        "45_plus_age_ratio_percent",
+        "engagement_rate_per_reach_percent",
+        "followers_summary",
+        "avg_video_reach_last_10",
         "avg_video_views_last_10",
     ],
     "private_insight_requirements": [
@@ -45,7 +50,7 @@ FETCH_DETAILS_PAGE = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Instagram Public Data Fetcher</title>
+  <title>Instagram Insights Provider Fetcher</title>
   <style>
     :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     body { margin: 0; background: #f6f7fb; color: #172033; }
@@ -77,23 +82,25 @@ FETCH_DETAILS_PAGE = """
 <body>
   <main>
     <section class="hero">
-      <h1>Instagram public data fetcher</h1>
-      <p>Read the Instagram links in your workbook, calculate sheet metrics, and optionally fetch public profile-page data such as followers and recent public video views. Private audience Insights still require account authorization/API access.</p>
+      <h1>Instagram insights provider fetcher</h1>
+      <p>Read Instagram links from the workbook and fetch the complete requested details from a configured provider API or JSON export. This avoids the unreliable logged-out Instagram page scraping path.</p>
       <div class="controls">
         <input id="fileInput" aria-label="Workbook path" placeholder="Workbook path" value="{{ default_workbook }}">
         <button id="fetchButton">Calculate workbook details</button>
-        <button id="publicFetchButton" type="button">Fetch public Instagram data</button>
+        <input id="providerFileInput" aria-label="Provider JSON path" placeholder="Optional provider JSON path">
+        <button id="insightsFetchButton" type="button">Fetch complete insights</button>
       </div>
     </section>
 
-    <div id="notice" class="notice"><strong>Data source:</strong> Workbook + public Instagram pages. Fetching public data may fail if Instagram rate-limits or blocks automated requests.</div>
+    <div id="notice" class="notice"><strong>Data source:</strong> Workbook + configured insights provider. Set a provider JSON path or configure INSTAGRAM_INSIGHTS_API_URL to fetch all requested fields.</div>
     <section id="results" class="grid" aria-live="polite"></section>
   </main>
 
   <script>
     const button = document.querySelector('#fetchButton');
     const fileInput = document.querySelector('#fileInput');
-    const publicFetchButton = document.querySelector('#publicFetchButton');
+    const providerFileInput = document.querySelector('#providerFileInput');
+    const insightsFetchButton = document.querySelector('#insightsFetchButton');
     const results = document.querySelector('#results');
     const notice = document.querySelector('#notice');
 
@@ -143,18 +150,19 @@ FETCH_DETAILS_PAGE = """
 
     function renderSourceDisclosure(payload) {
       const requirements = (payload.data_source.private_insight_requirements || []).map(item => `<li>${item}</li>`).join('');
-      const fields = (payload.data_source.public_fields || []).map(item => `<li>${item}</li>`).join('');
-      return `<article class="card full"><h2>Data source disclosure</h2><p>${payload.data_source.message}</p><p class="muted">Public fields this fetcher tries to collect:</p><ul>${fields}</ul><p class="muted">For private audience Insights, add:</p><ul>${requirements}</ul></article>`;
+      const fields = (payload.data_source.provider_fields || []).map(item => `<li>${item}</li>`).join('');
+      return `<article class="card full"><h2>Data source disclosure</h2><p>${payload.data_source.message}</p><p class="muted">Complete fields requested from the configured provider:</p><ul>${fields}</ul><p class="muted">Provider/API setup must include:</p><ul>${requirements}</ul></article>`;
     }
 
-    function renderPublicInstagram(payload) {
-      if (!payload.public_instagram) return '';
-      const rows = (payload.public_instagram.results || []).map(result => {
-        const profile = result.profile || {};
-        const statusText = result.ok ? 'Fetched' : `Failed: ${result.error}`;
-        return `<tr><td>${fmt(profile.username)}</td><td>${fmt(profile.followers)}</td><td>${fmt(profile.posts)}</td><td>${fmt(profile.avg_video_views_last_10)}</td><td>${fmt(profile.videos_found)}</td><td>${statusText}</td></tr>`;
+    function renderProviderInsights(payload) {
+      if (!payload.provider_insights) return '';
+      const rows = (payload.provider_insights.results || []).map(result => {
+        const insights = result.insights || {};
+        const followers = insights.followers_summary || {};
+        return `<tr><td>${fmt(result.username)}</td><td>${fmt(followers.total || followers.average)}</td><td>${fmt(insights.avg_video_views_last_10)}</td><td>${fmt(insights.avg_video_reach_last_10)}</td><td>${fmt(insights.engagement_rate_per_reach_percent)}%</td><td>${result.ok ? 'Complete' : `Missing: ${(result.missing_fields || []).join(', ')}`}</td></tr>`;
       }).join('');
-      return `<article class="card full"><h2>Public Instagram data fetched (${payload.public_instagram.count})</h2><table><thead><tr><th>Username</th><th>Followers</th><th>Posts</th><th>Avg. video views</th><th>Videos found</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No Instagram links were fetched.</td></tr>'}</tbody></table></article>`;
+      const provider = payload.provider_insights.provider || {};
+      return `<article class="card full"><h2>Complete insights fetched (${payload.provider_insights.complete_count}/${payload.provider_insights.count})</h2><p class="muted">Provider mode: ${provider.mode}. Configure a provider file/API if results are missing.</p><table><thead><tr><th>Username</th><th>Followers</th><th>Avg. video views</th><th>Avg. video reach</th><th>Engagement / reach</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No provider insights were returned.</td></tr>'}</tbody></table></article>`;
     }
 
     function renderMissing(payload) {
@@ -172,18 +180,19 @@ FETCH_DETAILS_PAGE = """
     function workbookParams() {
       const params = new URLSearchParams();
       if (fileInput.value.trim()) params.set('file', fileInput.value.trim());
+      if (providerFileInput.value.trim()) params.set('insights_file', providerFileInput.value.trim());
       return params;
     }
 
-    async function fetchDetails({ includePublic = false } = {}) {
+    async function fetchDetails({ includeInsights = false } = {}) {
       button.disabled = true;
-      publicFetchButton.disabled = true;
-      button.textContent = includePublic ? 'Fetching public data...' : 'Calculating...';
-      publicFetchButton.textContent = includePublic ? 'Fetching public data...' : 'Fetch public Instagram data';
+      insightsFetchButton.disabled = true;
+      button.textContent = includeInsights ? 'Fetching insights...' : 'Calculating...';
+      insightsFetchButton.textContent = includeInsights ? 'Fetching insights...' : 'Fetch complete insights';
       notice.style.display = 'block';
       results.innerHTML = '';
       const params = workbookParams();
-      if (includePublic) params.set('include_public_instagram', '1');
+      if (includeInsights) params.set('include_provider_insights', '1');
       try {
         const response = await fetch(`/api/details?${params.toString()}`);
         const payload = await response.json();
@@ -203,7 +212,7 @@ FETCH_DETAILS_PAGE = """
           metricCard(labels.avg_video_views_last_10, fmt(m.avg_video_views_last_10), 'avg_video_views_last_10', payload),
           renderLocations(m.top_5_locations_percent, payload),
           renderFollowers(m.followers),
-          renderPublicInstagram(payload),
+          renderProviderInsights(payload),
           renderMissing(payload),
           renderInfluencers(payload)
         ].join('');
@@ -212,14 +221,14 @@ FETCH_DETAILS_PAGE = """
         notice.style.display = 'block';
       } finally {
         button.disabled = false;
-        publicFetchButton.disabled = false;
+        insightsFetchButton.disabled = false;
         button.textContent = 'Calculate workbook details';
-        publicFetchButton.textContent = 'Fetch public Instagram data';
+        insightsFetchButton.textContent = 'Fetch complete insights';
       }
     }
 
     button.addEventListener('click', () => fetchDetails());
-    publicFetchButton.addEventListener('click', () => fetchDetails({ includePublic: true }));
+    insightsFetchButton.addEventListener('click', () => fetchDetails({ includeInsights: true }));
   </script>
 </body>
 </html>
@@ -259,9 +268,20 @@ def create_app() -> Flask:
         filters = _filters_from_request()
         filtered = filter_records(records, filters)
         include_public = _truthy(request.args.get("include_public_instagram"))
+        include_provider = _truthy(request.args.get("include_provider_insights"))
         payload = _details_payload(filtered, workbook)
+        if include_provider:
+            payload["provider_insights"] = _fetch_provider_insights_for_records(filtered)
         if include_public:
             payload["public_instagram"] = _fetch_public_instagram_for_records(filtered)
+        return jsonify(payload)
+
+    @app.post("/api/fetch-insights")
+    def provider_insights() -> Any:
+        records, workbook = _load_records_from_request()
+        filtered = filter_records(records, _filters_from_request())
+        payload = _details_payload(filtered, workbook)
+        payload["provider_insights"] = _fetch_provider_insights_for_records(filtered)
         return jsonify(payload)
 
     @app.post("/api/fetch-public-instagram")
@@ -295,6 +315,10 @@ def _details_payload(records: list[dict[str, Any]], workbook: Path) -> dict[str,
         "influencer_count": len(records),
         "influencers": normalize_records(records),
     }
+
+
+def _fetch_provider_insights_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    return fetch_insights_for_records(records, provider_file=request.args.get("insights_file"))
 
 
 def _fetch_public_instagram_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
