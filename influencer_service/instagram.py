@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import os
+from pathlib import Path
 import re
 from typing import Any, Iterable, Protocol
 from urllib.parse import urlparse
@@ -66,7 +67,7 @@ class InstaloaderClient:
         self.max_comments = max_comments
         username = os.getenv("INSTAGRAM_USERNAME")
         password = os.getenv("INSTAGRAM_PASSWORD")
-        session_file = os.getenv("INSTAGRAM_SESSION_FILE")
+        session_file = _session_file_path(username, os.getenv("INSTAGRAM_SESSION_FILE"))
         if browser_login:
             self._authenticate_with_browser(username, session_file)
         else:
@@ -107,6 +108,10 @@ class InstaloaderClient:
                 raise InstagramAuthenticationError(
                     f"Chrome is logged in as {logged_in_as or 'an unknown account'}, not {username}."
                 )
+            # update_cookies() authenticates requests, but Instaloader also checks this
+            # field before save_session_to_file().  login() and load_session_from_file()
+            # normally set it; a Selenium cookie transfer must do so explicitly.
+            self._loader.context.username = logged_in_as
             self._loader.save_session_to_file(session_file)
         finally:
             browser.quit()
@@ -223,3 +228,14 @@ def _login_error_message(error: Exception) -> str:
             "to complete the checkpoint interactively in Chrome and save its session."
         )
     return f"Instagram login failed: {detail}"
+
+
+def _session_file_path(username: str | None, configured: str | None) -> str | None:
+    """Accept either a session filename or an existing directory."""
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    if path.is_dir():
+        safe_username = re.sub(r"[^A-Za-z0-9_.-]", "_", username or "instagram")
+        path = path / f"session-{safe_username}"
+    return str(path)

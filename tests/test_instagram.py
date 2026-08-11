@@ -9,6 +9,7 @@ from influencer_service.instagram import (
     InstagramAuthenticationError,
     InstaloaderClient,
     _login_error_message,
+    _session_file_path,
     analyze_comments,
     collect_deliverable,
     shortcode_from_url,
@@ -204,3 +205,57 @@ def test_browser_login_mode_is_selected(monkeypatch, tmp_path):
     InstaloaderClient(browser_login=True)
 
     assert calls == [("campaign_account", str(tmp_path / "session"))]
+
+
+def test_session_directory_becomes_session_filename(tmp_path):
+    assert _session_file_path("campaign_account", str(tmp_path)) == str(
+        tmp_path / "session-campaign_account"
+    )
+
+
+def test_browser_cookie_transfer_sets_instaloader_username_before_save(monkeypatch, tmp_path):
+    class Context:
+        username = None
+
+        def update_cookies(self, cookies):
+            self.cookies = cookies
+
+    class Loader:
+        def __init__(self):
+            self.context = Context()
+            self.saved = None
+
+        def test_login(self):
+            return "campaign_account"
+
+        def save_session_to_file(self, filename):
+            if not self.context.username:
+                raise LoginException("Login required")
+            self.saved = filename
+
+    class Browser:
+        def get(self, url):
+            self.url = url
+
+        def get_cookies(self):
+            return [{"name": "sessionid", "value": "approved-cookie"}]
+
+        def quit(self):
+            self.closed = True
+
+    browser = Browser()
+    webdriver = SimpleNamespace(
+        ChromeOptions=lambda: SimpleNamespace(add_argument=lambda value: None),
+        Chrome=lambda options: browser,
+    )
+    monkeypatch.setitem(sys.modules, "selenium", SimpleNamespace(webdriver=webdriver))
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    client = object.__new__(InstaloaderClient)
+    client._loader = Loader()
+
+    session = str(tmp_path / "session")
+    client._authenticate_with_browser("campaign_account", session)
+
+    assert client._loader.context.username == "campaign_account"
+    assert client._loader.saved == session
+    assert browser.closed is True

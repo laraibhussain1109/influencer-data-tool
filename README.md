@@ -108,6 +108,12 @@ Selenium is used only for this one-time interactive authentication. Scrapy would
 the checkpoint because Instagram pages and comments are dynamically served behind the same
 authenticated APIs; Instaloader remains the collector after the browser session is saved.
 
+`INSTAGRAM_SESSION_FILE` may be either a complete filename or an existing directory. For
+example, `set INSTAGRAM_SESSION_FILE=.\` now saves to `session-your_username` inside the
+current directory. Previously the Selenium cookie transfer did not set Instaloader's internal
+authenticated username before saving, which caused the misleading `Login required` traceback;
+the browser-login flow now sets it explicitly.
+
 ## API
 
 ### Health check
