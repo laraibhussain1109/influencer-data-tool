@@ -14,11 +14,16 @@ def main() -> None:
     parser.add_argument("workbook", help="Input XLSX containing influencer names and deliverable URLs")
     parser.add_argument("--output", default="instagram_analytics.xlsx", help="Output XLSX path")
     parser.add_argument("--max-comments", type=int, default=500, help="Maximum comments per post")
+    parser.add_argument(
+        "--browser-login",
+        action="store_true",
+        help="Open Chrome for manual login/checkpoint approval, then save the session",
+    )
     args = parser.parse_args()
     if args.max_comments < 0:
         parser.error("--max-comments must be zero or greater")
     try:
-        client = InstaloaderClient(args.max_comments)
+        client = InstaloaderClient(args.max_comments, browser_login=args.browser_login)
     except InstagramAuthenticationError as error:
         print(f"Authentication required:\n{error}", file=sys.stderr)
         raise SystemExit(2) from None

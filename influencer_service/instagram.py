@@ -50,7 +50,7 @@ class InstaloaderClient:
     payloads.
     """
 
-    def __init__(self, max_comments: int = 500) -> None:
+    def __init__(self, max_comments: int = 500, browser_login: bool = False) -> None:
         import instaloader
 
         self._instaloader = instaloader
@@ -67,7 +67,49 @@ class InstaloaderClient:
         username = os.getenv("INSTAGRAM_USERNAME")
         password = os.getenv("INSTAGRAM_PASSWORD")
         session_file = os.getenv("INSTAGRAM_SESSION_FILE")
-        self._authenticate(username, password, session_file)
+        if browser_login:
+            self._authenticate_with_browser(username, session_file)
+        else:
+            self._authenticate(username, password, session_file)
+
+    def _authenticate_with_browser(self, username: str | None, session_file: str | None) -> None:
+        """Open Chrome for a manual login and copy its cookies into Instaloader."""
+        if not username:
+            raise InstagramAuthenticationError(
+                "Browser login requires INSTAGRAM_USERNAME and INSTAGRAM_SESSION_FILE."
+            )
+        if not session_file:
+            raise InstagramAuthenticationError(
+                "Browser login requires INSTAGRAM_SESSION_FILE so the approved session can be saved."
+            )
+
+        from selenium import webdriver
+
+        options = webdriver.ChromeOptions()
+        profile_dir = os.getenv("INSTAGRAM_CHROME_PROFILE_DIR")
+        if profile_dir:
+            options.add_argument(f"--user-data-dir={profile_dir}")
+        browser = webdriver.Chrome(options=options)
+        try:
+            browser.get("https://www.instagram.com/accounts/login/")
+            input(
+                "Complete the Instagram login/checkpoint in Chrome. "
+                "When your Instagram home page is visible, press Enter here..."
+            )
+            cookies = {item["name"]: item["value"] for item in browser.get_cookies()}
+            if not cookies.get("sessionid"):
+                raise InstagramAuthenticationError(
+                    "Chrome does not contain an Instagram session. Complete login before pressing Enter."
+                )
+            self._loader.context.update_cookies(cookies)
+            logged_in_as = self._loader.test_login()
+            if not logged_in_as or logged_in_as.casefold() != username.casefold():
+                raise InstagramAuthenticationError(
+                    f"Chrome is logged in as {logged_in_as or 'an unknown account'}, not {username}."
+                )
+            self._loader.save_session_to_file(session_file)
+        finally:
+            browser.quit()
 
     def _authenticate(
         self, username: str | None, password: str | None, session_file: str | None
@@ -177,6 +219,7 @@ def _login_error_message(error: Exception) -> str:
             f"URL in a browser where the same account is signed in and approve it: {url}\n"
             "Then run the collector again. Keep INSTAGRAM_SESSION_FILE configured so the "
             "approved session is saved and reused. This security check cannot be bypassed "
-            "programmatically."
+            "programmatically. Alternatively, run the same command with --browser-login "
+            "to complete the checkpoint interactively in Chrome and save its session."
         )
     return f"Instagram login failed: {detail}"

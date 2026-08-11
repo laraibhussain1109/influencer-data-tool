@@ -170,6 +170,7 @@ def test_checkpoint_error_has_clickable_url_and_retry_guidance():
     assert "https://www.instagram.com/auth_platform/?apc=one-time-token" in message
     assert "run the collector again" in message
     assert "cannot be bypassed" in message
+    assert "--browser-login" in message
 
 
 def test_client_raises_specific_authentication_error(monkeypatch):
@@ -186,3 +187,20 @@ def test_client_raises_specific_authentication_error(monkeypatch):
 
     with pytest.raises(InstagramAuthenticationError, match="https://www.instagram.com/challenge"):
         InstaloaderClient()
+
+
+def test_browser_login_mode_is_selected(monkeypatch, tmp_path):
+    module = fake_instaloader_module()
+    calls = []
+    monkeypatch.setitem(sys.modules, "instaloader", module)
+    monkeypatch.setenv("INSTAGRAM_USERNAME", "campaign_account")
+    monkeypatch.setenv("INSTAGRAM_SESSION_FILE", str(tmp_path / "session"))
+    monkeypatch.setattr(
+        InstaloaderClient,
+        "_authenticate_with_browser",
+        lambda self, username, session: calls.append((username, session)),
+    )
+
+    InstaloaderClient(browser_login=True)
+
+    assert calls == [("campaign_account", str(tmp_path / "session"))]

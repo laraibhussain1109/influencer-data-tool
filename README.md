@@ -80,6 +80,18 @@ Python traceback. Resolve it as follows:
 4. Run the same collector command again. The successful login will be saved to the session
    file, and future runs will reuse it instead of repeatedly submitting the password.
 
+If Instagram keeps issuing a new checkpoint, use the interactive browser-login mode instead:
+
+```bat
+python -m influencer_service.cli campaign.xlsx --output campaign_results.xlsx --max-comments 500 --browser-login
+```
+
+Chrome opens to Instagram. Log in manually, complete the checkpoint or two-factor prompt,
+wait until the Instagram home page is visible, and then press Enter in Command Prompt. The
+collector transfers the authenticated cookies to Instaloader, validates that they belong to
+`INSTAGRAM_USERNAME`, saves them to `INSTAGRAM_SESSION_FILE`, closes Chrome, and continues
+the spreadsheet job. The password environment variable is not used in this mode.
+
 For Windows Command Prompt, configure the variables in the same window used to run Python:
 
 ```bat
@@ -92,6 +104,9 @@ python -m influencer_service.cli campaign.xlsx --output campaign_results.xlsx --
 For PowerShell, use `$env:INSTAGRAM_USERNAME`, `$env:INSTAGRAM_PASSWORD`, and
 `$env:INSTAGRAM_SESSION_FILE` instead. A checkpoint must be approved by the account owner;
 the application intentionally does not attempt to bypass Instagram's security challenge.
+Selenium is used only for this one-time interactive authentication. Scrapy would not remove
+the checkpoint because Instagram pages and comments are dynamically served behind the same
+authenticated APIs; Instaloader remains the collector after the browser session is saved.
 
 ## API
 
