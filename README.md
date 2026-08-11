@@ -47,18 +47,25 @@ Only comments actually returned (up to `--max-comments`) are analyzed; `Comments
 Instagram's total comment count and `Comments Analyzed` makes sampling explicit. A failed or
 private post is recorded as an error row, so it does not stop the rest of the campaign.
 
-Instagram may require authentication or throttle collection. For access you are authorized
-to use, create an Instaloader session file and set both variables before running:
+Instagram requires an authenticated account to retrieve comments. Export the account ID and
+password as environment variables before starting the CLI or Flask process. An optional
+session file avoids logging in again on every run:
 
 ```bash
 export INSTAGRAM_USERNAME=your_username
+export INSTAGRAM_PASSWORD='your_password'
 export INSTAGRAM_SESSION_FILE=/secure/path/session-your_username
 ```
 
-Do not put passwords or session files in the workbook or repository. Collection is limited
-to data Instagram makes available to the supplied session; private/deleted posts and hidden
-like/view counts cannot be bypassed. Ensure your use complies with Instagram's terms,
-privacy requirements, and the consent applicable to the campaign.
+On the first run the collector logs in with the ID/password and saves the resulting session.
+Later runs validate and reuse that session. If it has expired, the password refreshes it. If
+you omit `INSTAGRAM_SESSION_FILE`, the collector logs in for that process without writing a
+session to disk. Never put the ID, password, or session file in a workbook, URL, API request,
+or repository. Use a dedicated account, protect these environment variables, and restrict
+the session file to the service user (for example, `chmod 600`). Collection is limited to
+data available to that account; private/deleted posts and hidden like/view counts cannot be
+bypassed. Ensure your use complies with Instagram's terms, privacy requirements, and the
+consent applicable to the campaign.
 
 ## API
 

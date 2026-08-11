@@ -1,8 +1,16 @@
+import sys
+from types import SimpleNamespace
+
 from openpyxl import Workbook, load_workbook
 import pytest
 
 from influencer_service.deliverables import collect_workbook, write_results
-from influencer_service.instagram import analyze_comments, collect_deliverable, shortcode_from_url
+from influencer_service.instagram import (
+    InstaloaderClient,
+    analyze_comments,
+    collect_deliverable,
+    shortcode_from_url,
+)
 
 
 class FakeClient:
@@ -69,3 +77,83 @@ def test_batch_records_bad_url_instead_of_aborting(tmp_path):
     results = collect_workbook(source, FakeClient())
     assert results[0]["status"] == "error"
     assert "Instagram" in results[0]["error"]
+
+
+class LoginException(Exception):
+    pass
+
+
+class FakeLoader:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.loaded = None
+        self.logged_in = None
+        self.saved = None
+        self.context = object()
+        self.instances.append(self)
+
+    def load_session_from_file(self, username, filename):
+        self.loaded = (username, filename)
+
+    def test_login(self):
+        return "campaign_account"
+
+    def login(self, username, password):
+        self.logged_in = (username, password)
+
+    def save_session_to_file(self, filename):
+        self.saved = filename
+
+
+def fake_instaloader_module():
+    FakeLoader.instances.clear()
+    return SimpleNamespace(
+        Instaloader=FakeLoader,
+        Post=SimpleNamespace(from_shortcode=lambda context, shortcode: None),
+        exceptions=SimpleNamespace(LoginException=LoginException),
+    )
+
+
+def test_client_reuses_valid_authenticated_session(monkeypatch, tmp_path):
+    module = fake_instaloader_module()
+    session = tmp_path / "session"
+    monkeypatch.setitem(sys.modules, "instaloader", module)
+    monkeypatch.setenv("INSTAGRAM_USERNAME", "campaign_account")
+    monkeypatch.setenv("INSTAGRAM_PASSWORD", "secret")
+    monkeypatch.setenv("INSTAGRAM_SESSION_FILE", str(session))
+
+    InstaloaderClient()
+
+    loader = FakeLoader.instances[-1]
+    assert loader.loaded == ("campaign_account", str(session))
+    assert loader.logged_in is None
+
+
+def test_client_logs_in_and_saves_when_session_is_missing(monkeypatch, tmp_path):
+    module = fake_instaloader_module()
+    session = tmp_path / "session"
+
+    def missing_session(self, username, filename):
+        raise FileNotFoundError(filename)
+
+    monkeypatch.setattr(FakeLoader, "load_session_from_file", missing_session)
+    monkeypatch.setitem(sys.modules, "instaloader", module)
+    monkeypatch.setenv("INSTAGRAM_USERNAME", "campaign_account")
+    monkeypatch.setenv("INSTAGRAM_PASSWORD", "secret")
+    monkeypatch.setenv("INSTAGRAM_SESSION_FILE", str(session))
+
+    InstaloaderClient()
+
+    loader = FakeLoader.instances[-1]
+    assert loader.logged_in == ("campaign_account", "secret")
+    assert loader.saved == str(session)
+
+
+def test_client_requires_login_credentials(monkeypatch):
+    monkeypatch.setitem(sys.modules, "instaloader", fake_instaloader_module())
+    monkeypatch.delenv("INSTAGRAM_USERNAME", raising=False)
+    monkeypatch.delenv("INSTAGRAM_PASSWORD", raising=False)
+    monkeypatch.delenv("INSTAGRAM_SESSION_FILE", raising=False)
+    with pytest.raises(RuntimeError, match="login is required"):
+        InstaloaderClient()

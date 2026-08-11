@@ -38,8 +38,11 @@ class SentimentSummary:
 class InstaloaderClient:
     """Fetch public post metadata through Instaloader.
 
-    Set ``INSTAGRAM_USERNAME`` and ``INSTAGRAM_SESSION_FILE`` to use an existing
-    authenticated session. Password-based login is deliberately not performed.
+    Set ``INSTAGRAM_USERNAME`` and ``INSTAGRAM_PASSWORD`` to log in.  When
+    ``INSTAGRAM_SESSION_FILE`` is also set, a valid saved session is reused and a
+    newly authenticated session is saved there.  Credentials are read only from
+    the environment so they do not leak into workbooks, command history, or API
+    payloads.
     """
 
     def __init__(self, max_comments: int = 500) -> None:
@@ -57,9 +60,41 @@ class InstaloaderClient:
         )
         self.max_comments = max_comments
         username = os.getenv("INSTAGRAM_USERNAME")
+        password = os.getenv("INSTAGRAM_PASSWORD")
         session_file = os.getenv("INSTAGRAM_SESSION_FILE")
-        if username and session_file:
-            self._loader.load_session_from_file(username, session_file)
+        self._authenticate(username, password, session_file)
+
+    def _authenticate(
+        self, username: str | None, password: str | None, session_file: str | None
+    ) -> None:
+        """Reuse a session when possible, otherwise perform an Instagram login."""
+        if not username:
+            raise RuntimeError(
+                "Instagram login is required for comments. Set INSTAGRAM_USERNAME and "
+                "INSTAGRAM_PASSWORD (and optionally INSTAGRAM_SESSION_FILE)."
+            )
+
+        if session_file:
+            try:
+                self._loader.load_session_from_file(username, session_file)
+                if self._loader.test_login() == username:
+                    return
+            except (FileNotFoundError, self._instaloader.exceptions.LoginException):
+                # Missing, expired, or invalid sessions are refreshed using the password below.
+                pass
+
+        if not password:
+            raise RuntimeError(
+                "No valid Instagram session was found. Set INSTAGRAM_PASSWORD to log in "
+                "and refresh the session."
+            )
+        try:
+            self._loader.login(username, password)
+        except self._instaloader.exceptions.LoginException as error:
+            raise RuntimeError(f"Instagram login failed: {error}") from error
+
+        if session_file:
+            self._loader.save_session_to_file(session_file)
 
     def fetch(self, shortcode: str) -> dict[str, Any]:
         post = self._instaloader.Post.from_shortcode(self._loader.context, shortcode)
