@@ -67,6 +67,32 @@ data available to that account; private/deleted posts and hidden like/view count
 bypassed. Ensure your use complies with Instagram's terms, privacy requirements, and the
 consent applicable to the campaign.
 
+#### Instagram “Checkpoint required” on Windows
+
+This is an Instagram account-security challenge, not a workbook error. The collector now
+prints a short, clickable `https://www.instagram.com/auth_platform/...` URL instead of a
+Python traceback. Resolve it as follows:
+
+1. Open the printed URL in a browser where the same Instagram account is already signed in.
+2. Confirm that the login was you and complete any verification Instagram requests.
+3. Keep the same three environment variables configured, especially a writable
+   `INSTAGRAM_SESSION_FILE` path.
+4. Run the same collector command again. The successful login will be saved to the session
+   file, and future runs will reuse it instead of repeatedly submitting the password.
+
+For Windows Command Prompt, configure the variables in the same window used to run Python:
+
+```bat
+set INSTAGRAM_USERNAME=your_username
+set INSTAGRAM_PASSWORD=your_password
+set INSTAGRAM_SESSION_FILE=%USERPROFILE%\.instagram-session-your_username
+python -m influencer_service.cli campaign.xlsx --output campaign_results.xlsx --max-comments 500
+```
+
+For PowerShell, use `$env:INSTAGRAM_USERNAME`, `$env:INSTAGRAM_PASSWORD`, and
+`$env:INSTAGRAM_SESSION_FILE` instead. A checkpoint must be approved by the account owner;
+the application intentionally does not attempt to bypass Instagram's security challenge.
+
 ## API
 
 ### Health check

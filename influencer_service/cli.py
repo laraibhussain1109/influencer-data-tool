@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from influencer_service.deliverables import collect_workbook, write_results
-from influencer_service.instagram import InstaloaderClient
+from influencer_service.instagram import InstagramAuthenticationError, InstaloaderClient
 
 
 def main() -> None:
@@ -16,7 +17,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.max_comments < 0:
         parser.error("--max-comments must be zero or greater")
-    results = collect_workbook(args.workbook, InstaloaderClient(args.max_comments))
+    try:
+        client = InstaloaderClient(args.max_comments)
+    except InstagramAuthenticationError as error:
+        print(f"Authentication required:\n{error}", file=sys.stderr)
+        raise SystemExit(2) from None
+    results = collect_workbook(args.workbook, client)
     output = write_results(args.output, results)
     failures = sum(item["status"] == "error" for item in results)
     print(f"Wrote {len(results)} deliverables to {output} ({failures} errors).")

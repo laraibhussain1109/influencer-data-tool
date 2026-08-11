@@ -6,7 +6,9 @@ import pytest
 
 from influencer_service.deliverables import collect_workbook, write_results
 from influencer_service.instagram import (
+    InstagramAuthenticationError,
     InstaloaderClient,
+    _login_error_message,
     analyze_comments,
     collect_deliverable,
     shortcode_from_url,
@@ -156,4 +158,31 @@ def test_client_requires_login_credentials(monkeypatch):
     monkeypatch.delenv("INSTAGRAM_PASSWORD", raising=False)
     monkeypatch.delenv("INSTAGRAM_SESSION_FILE", raising=False)
     with pytest.raises(RuntimeError, match="login is required"):
+        InstaloaderClient()
+
+
+def test_checkpoint_error_has_clickable_url_and_retry_guidance():
+    error = LoginException(
+        "Login: Checkpoint required. Point your browser to "
+        "/auth_platform/?apc=one-time-token - follow the instructions, then retry."
+    )
+    message = _login_error_message(error)
+    assert "https://www.instagram.com/auth_platform/?apc=one-time-token" in message
+    assert "run the collector again" in message
+    assert "cannot be bypassed" in message
+
+
+def test_client_raises_specific_authentication_error(monkeypatch):
+    module = fake_instaloader_module()
+
+    def rejected_login(self, username, password):
+        raise LoginException("Checkpoint required. /challenge/?token=abc")
+
+    monkeypatch.setattr(FakeLoader, "login", rejected_login)
+    monkeypatch.setitem(sys.modules, "instaloader", module)
+    monkeypatch.setenv("INSTAGRAM_USERNAME", "campaign_account")
+    monkeypatch.setenv("INSTAGRAM_PASSWORD", "secret")
+    monkeypatch.delenv("INSTAGRAM_SESSION_FILE", raising=False)
+
+    with pytest.raises(InstagramAuthenticationError, match="https://www.instagram.com/challenge"):
         InstaloaderClient()

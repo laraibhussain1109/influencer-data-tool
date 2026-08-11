@@ -9,7 +9,7 @@ from flask import Flask, jsonify, request
 
 from influencer_service.analytics import build_metrics, filter_records, normalize_records
 from influencer_service.deliverables import collect_workbook, write_results
-from influencer_service.instagram import InstaloaderClient
+from influencer_service.instagram import InstagramAuthenticationError, InstaloaderClient
 from influencer_service.xlsx_reader import load_first_sheet
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +30,10 @@ def create_app() -> Flask:
     @app.errorhandler(ValueError)
     def invalid_workbook(error: ValueError) -> tuple[Any, int]:
         return jsonify({"error": str(error)}), 400
+
+    @app.errorhandler(InstagramAuthenticationError)
+    def instagram_authentication_required(error: InstagramAuthenticationError) -> tuple[Any, int]:
+        return jsonify({"error": str(error), "code": "instagram_authentication_required"}), 401
 
     @app.get("/api/metrics")
     def metrics() -> Any:

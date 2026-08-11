@@ -18,6 +18,11 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 DELIVERABLE_PATH = re.compile(r"^/(?:p|reel|tv)/([A-Za-z0-9_-]+)/?")
+CHECKPOINT_PATH = re.compile(r"(/(?:auth_platform|challenge)/\?[^\s]+)")
+
+
+class InstagramAuthenticationError(RuntimeError):
+    """Raised when Instagram requires account action before collection can continue."""
 
 
 class InstagramClient(Protocol):
@@ -69,7 +74,7 @@ class InstaloaderClient:
     ) -> None:
         """Reuse a session when possible, otherwise perform an Instagram login."""
         if not username:
-            raise RuntimeError(
+            raise InstagramAuthenticationError(
                 "Instagram login is required for comments. Set INSTAGRAM_USERNAME and "
                 "INSTAGRAM_PASSWORD (and optionally INSTAGRAM_SESSION_FILE)."
             )
@@ -84,14 +89,14 @@ class InstaloaderClient:
                 pass
 
         if not password:
-            raise RuntimeError(
+            raise InstagramAuthenticationError(
                 "No valid Instagram session was found. Set INSTAGRAM_PASSWORD to log in "
                 "and refresh the session."
             )
         try:
             self._loader.login(username, password)
         except self._instaloader.exceptions.LoginException as error:
-            raise RuntimeError(f"Instagram login failed: {error}") from error
+            raise InstagramAuthenticationError(_login_error_message(error)) from error
 
         if session_file:
             self._loader.save_session_to_file(session_file)
@@ -159,3 +164,19 @@ def collect_deliverable(url: str, client: InstagramClient) -> dict[str, Any]:
         "comments_collected": summary.total_analyzed,
         "sentiment": asdict(summary),
     }
+
+
+def _login_error_message(error: Exception) -> str:
+    """Turn an Instaloader login failure into actionable, checkpoint-safe guidance."""
+    detail = str(error)
+    checkpoint = CHECKPOINT_PATH.search(detail)
+    if checkpoint:
+        url = f"https://www.instagram.com{checkpoint.group(1)}"
+        return (
+            "Instagram blocked the automated login with a security checkpoint. Open this "
+            f"URL in a browser where the same account is signed in and approve it: {url}\n"
+            "Then run the collector again. Keep INSTAGRAM_SESSION_FILE configured so the "
+            "approved session is saved and reused. This security check cannot be bypassed "
+            "programmatically."
+        )
+    return f"Instagram login failed: {detail}"
