@@ -30,7 +30,8 @@ def main() -> None:
     results = collect_workbook(args.workbook, client)
     output = write_results(args.output, results)
     failures = sum(item["status"] == "error" for item in results)
-    print(f"Wrote {len(results)} deliverables to {output} ({failures} errors).")
+    partial = sum(item["status"] == "partial" for item in results)
+    print(f"Wrote {len(results)} deliverables to {output} ({failures} errors, {partial} partial).")
 
 
 if __name__ == "__main__":

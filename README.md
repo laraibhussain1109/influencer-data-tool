@@ -114,6 +114,24 @@ current directory. Previously the Selenium cookie transfer did not set Instaload
 authenticated username before saving, which caused the misleading `Login required` traceback;
 the browser-login flow now sets it explicitly.
 
+#### Instagram comments endpoint returns `200 OK` with `"fail"`
+
+Instagram can reject its private comments endpoint even while post metadata remains available.
+This response comes from Instagram, not from the workbook. The collector now limits Instaloader
+to one connection attempt per request instead of repeatedly retrying. When comment text is
+rejected, the row is written as `partial`: likes, views, and Instagram's total comment count are
+preserved, while sentiment is left unavailable and the reason appears in the `Warning` column.
+This prevents one unavailable comments endpoint from blocking the entire spreadsheet.
+
+There is no safe retry setting that can force Instagram to return those comments. Try a smaller
+`--max-comments`, wait before rerunning, and avoid concurrent jobs. For dependable production
+comment access, use an Instagram/Meta API integration for an eligible professional account and
+the permissions granted to your application; Selenium or Scrapy requests to the same private
+endpoint can receive the same rejection.
+
+If you only need likes, views, and total comment counts for a run, use
+`--max-comments 0`; the collector will not call the comment-text endpoint at all.
+
 ## API
 
 ### Health check

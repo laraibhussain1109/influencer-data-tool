@@ -86,6 +86,10 @@ class LoginException(Exception):
     pass
 
 
+class InstaloaderException(Exception):
+    pass
+
+
 class FakeLoader:
     instances = []
 
@@ -114,7 +118,10 @@ def fake_instaloader_module():
     return SimpleNamespace(
         Instaloader=FakeLoader,
         Post=SimpleNamespace(from_shortcode=lambda context, shortcode: None),
-        exceptions=SimpleNamespace(LoginException=LoginException),
+        exceptions=SimpleNamespace(
+            LoginException=LoginException,
+            InstaloaderException=InstaloaderException,
+        ),
     )
 
 
@@ -259,3 +266,30 @@ def test_browser_cookie_transfer_sets_instaloader_username_before_save(monkeypat
     assert client._loader.context.username == "campaign_account"
     assert client._loader.saved == session
     assert browser.closed is True
+
+
+def test_comment_endpoint_failure_preserves_engagement_metrics(monkeypatch):
+    class Post:
+        likes = 321
+        video_view_count = 654
+        is_video = True
+        comments = 12
+
+        def get_comments(self):
+            raise InstaloaderException('200 OK - "fail" status')
+
+    client = object.__new__(InstaloaderClient)
+    client.max_comments = 500
+    client._loader = SimpleNamespace(context=object())
+    client._instaloader = SimpleNamespace(
+        Post=SimpleNamespace(from_shortcode=lambda context, shortcode: Post()),
+        exceptions=SimpleNamespace(InstaloaderException=InstaloaderException),
+    )
+
+    result = client.fetch("ABC")
+
+    assert result["likes"] == 321
+    assert result["views"] == 654
+    assert result["comments_count"] == 12
+    assert result["comments"] == []
+    assert "sentiment is unavailable" in result["comments_error"]

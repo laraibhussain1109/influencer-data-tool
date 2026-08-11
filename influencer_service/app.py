@@ -80,6 +80,7 @@ def create_app() -> Flask:
             "output_file": str(output),
             "count": len(results),
             "succeeded": sum(item["status"] == "ok" for item in results),
+            "partial": sum(item["status"] == "partial" for item in results),
             "failed": sum(item["status"] == "error" for item in results),
             "results": results,
         })

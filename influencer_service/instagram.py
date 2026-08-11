@@ -63,6 +63,9 @@ class InstaloaderClient:
             save_metadata=False,
             compress_json=False,
             quiet=True,
+            # Instagram sometimes returns HTTP 200 with a JSON "fail" payload for
+            # comments. Do not let Instaloader retry every post indefinitely.
+            max_connection_attempts=1,
         )
         self.max_comments = max_comments
         username = os.getenv("INSTAGRAM_USERNAME")
@@ -151,15 +154,26 @@ class InstaloaderClient:
     def fetch(self, shortcode: str) -> dict[str, Any]:
         post = self._instaloader.Post.from_shortcode(self._loader.context, shortcode)
         comments = []
-        for comment in post.get_comments():
-            comments.append(comment.text)
-            if len(comments) >= self.max_comments:
-                break
+        comments_error = None
+        if self.max_comments:
+            try:
+                for comment in post.get_comments():
+                    comments.append(comment.text)
+                    if len(comments) >= self.max_comments:
+                        break
+            except self._instaloader.exceptions.InstaloaderException as error:
+                # Preserve likes/views/the total comment count when Instagram's
+                # private comments endpoint is temporarily unavailable.
+                comments_error = (
+                    "Instagram did not return comment text. Engagement metrics were collected, "
+                    f"but sentiment is unavailable: {error}"
+                )
         return {
             "likes": post.likes,
             "views": post.video_view_count if post.is_video else None,
             "comments_count": post.comments,
             "comments": comments,
+            "comments_error": comments_error,
         }
 
 
@@ -210,6 +224,7 @@ def collect_deliverable(url: str, client: InstagramClient) -> dict[str, Any]:
         "comments": raw.get("comments_count"),
         "comments_collected": summary.total_analyzed,
         "sentiment": asdict(summary),
+        "warning": raw.get("comments_error"),
     }
 
 

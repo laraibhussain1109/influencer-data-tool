@@ -34,7 +34,7 @@ def collect_workbook(path: str | Path, client: InstagramClient) -> list[dict[str
         }
         try:
             result.update(collect_deliverable(str(row.get(url_column) or ""), client))
-            result["status"] = "ok"
+            result["status"] = "partial" if result.get("warning") else "ok"
         except Exception as error:  # Keep a batch running when one deliverable is unavailable.
             result.update({"status": "error", "error": str(error)})
         results.append(result)
@@ -51,7 +51,7 @@ def write_results(path: str | Path, results: list[dict[str, Any]]) -> Path:
     headers = [
         "Influencer Name", "Deliverable URL", "Status", "Likes", "Views", "Comments",
         "Comments Analyzed", "Positive", "Neutral", "Negative", "Average Compound",
-        "Error", "Collected At (UTC)",
+        "Warning", "Error", "Collected At (UTC)",
     ]
     sheet.append(headers)
     collected_at = datetime.now(timezone.utc).isoformat()
@@ -61,7 +61,8 @@ def write_results(path: str | Path, results: list[dict[str, Any]]) -> Path:
             item.get("influencer_name"), item.get("deliverable_url"), item.get("status"),
             item.get("likes"), item.get("views"), item.get("comments"),
             item.get("comments_collected"), sentiment.get("positive"), sentiment.get("neutral"),
-            sentiment.get("negative"), sentiment.get("average_compound"), item.get("error"),
+            sentiment.get("negative"), sentiment.get("average_compound"), item.get("warning"),
+            item.get("error"),
             collected_at,
         ])
     sheet.freeze_panes = "A2"
