@@ -274,6 +274,37 @@ def test_comment_endpoint_failure_preserves_engagement_metrics(monkeypatch):
         video_view_count = 654
         is_video = True
         comments = 12
+        url = "https://www.instagram.com/reel/ABC/"
+
+        def get_comments(self):
+            raise InstaloaderException('200 OK - "fail" status')
+
+    client = object.__new__(InstaloaderClient)
+    client.max_comments = 500
+    client._loader = SimpleNamespace(context=object())
+    client._instaloader = SimpleNamespace(
+        Post=SimpleNamespace(from_shortcode=lambda context, shortcode: Post()),
+        exceptions=SimpleNamespace(InstaloaderException=InstaloaderException),
+    )
+    monkeypatch.setattr(client, "_fetch_comments_with_browser", lambda url: ["Great reel!"])
+
+    result = client.fetch("ABC")
+
+    assert result["likes"] == 321
+    assert result["views"] == 654
+    assert result["comments_count"] == 12
+    assert result["comments"] == ["Great reel!"]
+    assert result["comments_source"] == "selenium"
+    assert result["comments_error"] is None
+
+
+def test_both_comment_collection_paths_can_fail_without_losing_metrics(monkeypatch):
+    class Post:
+        likes = 321
+        video_view_count = 654
+        is_video = True
+        comments = 12
+        url = "https://www.instagram.com/reel/ABC/"
 
         def get_comments(self):
             raise InstaloaderException('200 OK - "fail" status')
@@ -286,10 +317,11 @@ def test_comment_endpoint_failure_preserves_engagement_metrics(monkeypatch):
         exceptions=SimpleNamespace(InstaloaderException=InstaloaderException),
     )
 
-    result = client.fetch("ABC")
+    def browser_failure(url):
+        raise RuntimeError("comments hidden")
 
+    monkeypatch.setattr(client, "_fetch_comments_with_browser", browser_failure)
+    result = client.fetch("ABC")
     assert result["likes"] == 321
-    assert result["views"] == 654
-    assert result["comments_count"] == 12
-    assert result["comments"] == []
-    assert "sentiment is unavailable" in result["comments_error"]
+    assert result["comments_source"] == "unavailable"
+    assert "browser fallback also failed" in result["comments_error"]

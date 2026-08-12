@@ -50,7 +50,7 @@ def write_results(path: str | Path, results: list[dict[str, Any]]) -> Path:
     sheet.title = "Instagram Analytics"
     headers = [
         "Influencer Name", "Deliverable URL", "Status", "Likes", "Views", "Comments",
-        "Comments Analyzed", "Positive", "Neutral", "Negative", "Average Compound",
+        "Comments Analyzed", "Comment Source", "Positive", "Neutral", "Negative", "Average Compound",
         "Warning", "Error", "Collected At (UTC)",
     ]
     sheet.append(headers)
@@ -60,7 +60,7 @@ def write_results(path: str | Path, results: list[dict[str, Any]]) -> Path:
         sheet.append([
             item.get("influencer_name"), item.get("deliverable_url"), item.get("status"),
             item.get("likes"), item.get("views"), item.get("comments"),
-            item.get("comments_collected"), sentiment.get("positive"), sentiment.get("neutral"),
+            item.get("comments_collected"), item.get("comments_source"), sentiment.get("positive"), sentiment.get("neutral"),
             sentiment.get("negative"), sentiment.get("average_compound"), item.get("warning"),
             item.get("error"),
             collected_at,

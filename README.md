@@ -117,17 +117,19 @@ the browser-login flow now sets it explicitly.
 #### Instagram comments endpoint returns `200 OK` with `"fail"`
 
 Instagram can reject its private comments endpoint even while post metadata remains available.
-This response comes from Instagram, not from the workbook. The collector now limits Instaloader
-to one connection attempt per request instead of repeatedly retrying. When comment text is
-rejected, the row is written as `partial`: likes, views, and Instagram's total comment count are
-preserved, while sentiment is left unavailable and the reason appears in the `Warning` column.
-This prevents one unavailable comments endpoint from blocking the entire spreadsheet.
+This response comes from Instagram, not from the workbook. The collector limits Instaloader to
+one attempt and then automatically opens the post in a headless authenticated Chrome session,
+loads the rendered comments, and analyzes those instead. `Comment Source` in the result is
+`instaloader` or `selenium`, so the collection path is auditable.
 
-There is no safe retry setting that can force Instagram to return those comments. Try a smaller
-`--max-comments`, wait before rerunning, and avoid concurrent jobs. For dependable production
-comment access, use an Instagram/Meta API integration for an eligible professional account and
-the permissions granted to your application; Selenium or Scrapy requests to the same private
-endpoint can receive the same rejection.
+If both Instagram's API and rendered page reject comment access, the row is written as `partial`:
+likes, views, and Instagram's total comment count are preserved, while sentiment is unavailable
+and the reason appears in `Warning`. This prevents one post from blocking the spreadsheet.
+
+The Selenium fallback loads up to `--max-comments` currently rendered comments by repeatedly
+activating the page's semantic “load more comments” control. Instagram can still withhold or
+rate-limit comments. For dependable production access, use an Instagram/Meta API integration
+for an eligible professional account and permissions granted to your application.
 
 If you only need likes, views, and total comment counts for a run, use
 `--max-comments 0`; the collector will not call the comment-text endpoint at all.

@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any, Iterable, Protocol
 from urllib.parse import urlparse
 
@@ -20,6 +21,28 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 DELIVERABLE_PATH = re.compile(r"^/(?:p|reel|tv)/([A-Za-z0-9_-]+)/?")
 CHECKPOINT_PATH = re.compile(r"(/(?:auth_platform|challenge)/\?[^\s]+)")
+
+# Instagram does not provide stable CSS class names. These scripts use semantic elements:
+# a rendered comment is a list item with a timestamp, and its body is the longest span that
+# is not part of a profile link or a control. The first timestamped item is the post caption.
+_COMMENT_TEXT_SCRIPT = """
+const items = [...document.querySelectorAll('article ul li')].filter(li => li.querySelector('time'));
+return items.slice(1).map(li => {
+  const candidates = [...li.querySelectorAll('span')]
+    .filter(node => !node.closest('a, button, time'))
+    .map(node => (node.innerText || '').trim())
+    .filter(Boolean);
+  return candidates.sort((a, b) => b.length - a.length)[0] || '';
+}).filter(Boolean);
+"""
+_LOAD_MORE_COMMENTS_SCRIPT = """
+const controls = [...document.querySelectorAll('button, [role="button"]')];
+const more = controls.find(node => /load more comments|view more comments/i.test(
+  `${node.innerText || ''} ${node.getAttribute('aria-label') || ''}`
+));
+if (more) more.click();
+window.scrollBy(0, 700);
+"""
 
 
 class InstagramAuthenticationError(RuntimeError):
@@ -155,6 +178,7 @@ class InstaloaderClient:
         post = self._instaloader.Post.from_shortcode(self._loader.context, shortcode)
         comments = []
         comments_error = None
+        comments_source = "instaloader"
         if self.max_comments:
             try:
                 for comment in post.get_comments():
@@ -162,19 +186,64 @@ class InstaloaderClient:
                     if len(comments) >= self.max_comments:
                         break
             except self._instaloader.exceptions.InstaloaderException as error:
-                # Preserve likes/views/the total comment count when Instagram's
-                # private comments endpoint is temporarily unavailable.
-                comments_error = (
-                    "Instagram did not return comment text. Engagement metrics were collected, "
-                    f"but sentiment is unavailable: {error}"
-                )
+                api_error = str(error)
+                try:
+                    comments = self._fetch_comments_with_browser(
+                        f"https://www.instagram.com/p/{shortcode}/"
+                    )
+                    comments_source = "selenium"
+                    if not comments:
+                        comments_error = "The browser page did not expose any comment text."
+                except Exception as browser_error:
+                    comments_source = "unavailable"
+                    comments_error = (
+                        f"Instagram's comments API failed ({api_error}); browser fallback also "
+                        f"failed ({browser_error})."
+                    )
         return {
             "likes": post.likes,
             "views": post.video_view_count if post.is_video else None,
             "comments_count": post.comments,
             "comments": comments,
             "comments_error": comments_error,
+            "comments_source": comments_source,
         }
+
+    def _fetch_comments_with_browser(self, post_url: str) -> list[str]:
+        """Collect rendered comment text when Instagram's private JSON endpoint rejects it."""
+        from selenium import webdriver
+
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1280,1200")
+        browser = webdriver.Chrome(options=options)
+        try:
+            browser.set_page_load_timeout(30)
+            browser.get("https://www.instagram.com/")
+            session_cookies = self._loader.context._session.cookies.get_dict()
+            for name, value in session_cookies.items():
+                browser.add_cookie({"name": name, "value": value, "domain": ".instagram.com"})
+            browser.get(post_url)
+
+            previous_count = -1
+            unchanged_rounds = 0
+            for _ in range(25):
+                comments = browser.execute_script(_COMMENT_TEXT_SCRIPT)
+                if len(comments) >= self.max_comments:
+                    break
+                if len(comments) == previous_count:
+                    unchanged_rounds += 1
+                else:
+                    unchanged_rounds = 0
+                if unchanged_rounds >= 3:
+                    break
+                previous_count = len(comments)
+                browser.execute_script(_LOAD_MORE_COMMENTS_SCRIPT)
+                time.sleep(0.75)
+            return list(dict.fromkeys(browser.execute_script(_COMMENT_TEXT_SCRIPT)))[: self.max_comments]
+        finally:
+            browser.quit()
 
 
 def shortcode_from_url(url: str) -> str:
@@ -223,6 +292,7 @@ def collect_deliverable(url: str, client: InstagramClient) -> dict[str, Any]:
         "views": raw.get("views"),
         "comments": raw.get("comments_count"),
         "comments_collected": summary.total_analyzed,
+        "comments_source": raw.get("comments_source"),
         "sentiment": asdict(summary),
         "warning": raw.get("comments_error"),
     }
