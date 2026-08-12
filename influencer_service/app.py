@@ -8,6 +8,8 @@ from typing import Any
 from flask import Flask, jsonify, request
 
 from influencer_service.analytics import build_metrics, filter_records, normalize_records
+from influencer_service.deliverables import collect_workbook, write_results
+from influencer_service.instagram import InstagramAuthenticationError, InstaloaderClient
 from influencer_service.xlsx_reader import load_first_sheet
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +30,10 @@ def create_app() -> Flask:
     @app.errorhandler(ValueError)
     def invalid_workbook(error: ValueError) -> tuple[Any, int]:
         return jsonify({"error": str(error)}), 400
+
+    @app.errorhandler(InstagramAuthenticationError)
+    def instagram_authentication_required(error: InstagramAuthenticationError) -> tuple[Any, int]:
+        return jsonify({"error": str(error), "code": "instagram_authentication_required"}), 401
 
     @app.get("/api/metrics")
     def metrics() -> Any:
@@ -52,6 +58,32 @@ def create_app() -> Flask:
                 "results": normalize_records(filtered),
             }
         )
+
+    @app.post("/api/deliverables/collect")
+    def collect_deliverables() -> Any:
+        """Collect an XLSX batch and write an enriched XLSX result file."""
+        body = request.get_json(silent=True) or {}
+        workbook = Path(body.get("file", DEFAULT_WORKBOOK)).expanduser().resolve()
+        if not workbook.exists():
+            raise FileNotFoundError(f"Workbook not found: {workbook}")
+        try:
+            max_comments = int(body.get("max_comments", 500))
+        except (TypeError, ValueError) as error:
+            raise ValueError("max_comments must be an integer.") from error
+        if max_comments < 0:
+            raise ValueError("max_comments must be zero or greater.")
+        output = Path(body.get("output", REPO_ROOT / "instagram_analytics.xlsx")).expanduser().resolve()
+        results = collect_workbook(workbook, InstaloaderClient(max_comments))
+        write_results(output, results)
+        return jsonify({
+            "source_file": str(workbook),
+            "output_file": str(output),
+            "count": len(results),
+            "succeeded": sum(item["status"] == "ok" for item in results),
+            "partial": sum(item["status"] == "partial" for item in results),
+            "failed": sum(item["status"] == "error" for item in results),
+            "results": results,
+        })
 
     return app
 
